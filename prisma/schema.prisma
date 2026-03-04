@@ -1,0 +1,25 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Transaction {
+  id            String   @id @default(cuid())
+  source        String   // "nubank_credit", "nubank_account" etc.
+  externalId    String?  // se existir no CSV
+  description   String
+  categoryRaw   String?  // categoria como veio no CSV
+  amountCents   Int      // sempre em centavos (negativo = despesa; positivo = crédito)
+  occurredAt    DateTime
+  importedAt    DateTime @default(now())
+
+  // Dedup:
+  rowHash       String   @unique
+
+  @@index([occurredAt])
+  @@index([source])
+}
