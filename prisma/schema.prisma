@@ -19,6 +19,12 @@ enum PaymentType {
   PARCELADO
 }
 
+enum Wallet {
+  SALARIO
+  VALE_ALIMENTACAO
+  OUTROS
+}
+
 enum IncomeType {
   SALARIO
   VALE_ALIMENTACAO
@@ -26,10 +32,21 @@ enum IncomeType {
   RESTANTE_MES_ANTERIOR
 }
 
+enum RuleTarget {
+  TRANSACTION
+  INCOME
+}
+
+enum RuleMatchType {
+  CONTAINS
+  STARTS_WITH
+  REGEX
+}
+
 model Category {
   id        String   @id @default(cuid())
-  groupName String   // ex: "Saídas Fixas", "Saídas Alimentação", ...
-  name      String   // ex: "Aluguel", "Mercado (Vale)", ...
+  groupName String   // ex: "Saídas Fixas"
+  name      String   // ex: "Aluguel"
   person    Person?  // null = geral; ou PEDRO/MIRELA se for "Pessoal"
   isActive  Boolean  @default(true)
 
@@ -41,12 +58,42 @@ model Category {
   @@index([person])
 }
 
+model Rule {
+  id            String        @id @default(cuid())
+  isActive      Boolean       @default(true)
+
+  target        RuleTarget
+  matchType     RuleMatchType
+  pattern       String        // texto ou regex
+  priority      Int           @default(100) // menor = aplica primeiro
+
+  // ações (opcionais)
+  renameTo      String?
+  categoryId    String?
+  category      Category?     @relation(fields: [categoryId], references: [id])
+
+  tags          String[]      @default([])
+  person        Person?
+  paymentType   PaymentType?
+  wallet        Wallet?
+
+  // para income:
+  incomeType    IncomeType?
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([target, isActive])
+  @@index([priority])
+}
+
 model Income {
   id          String     @id @default(cuid())
-  person      Person     // normalmente PEDRO/MIRELA/AMBOS
+  person      Person
   type        IncomeType
+  wallet      Wallet     @default(SALARIO)
   amountCents Int
-  monthKey    String     // "YYYY-MM" (competência)
+  monthKey    String     // "YYYY-MM"
   notes       String?
 
   createdAt   DateTime   @default(now())
@@ -55,6 +102,24 @@ model Income {
   @@index([monthKey])
   @@index([person])
   @@index([type])
+  @@index([wallet])
+}
+
+model IncomeTemplate {
+  id          String     @id @default(cuid())
+  type        IncomeType
+  wallet      Wallet
+  person      Person
+  amountCents Int
+  isActive    Boolean    @default(true)
+
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([isActive])
+  @@index([type])
+  @@index([wallet])
+  @@index([person])
 }
 
 model Transaction {
@@ -62,32 +127,34 @@ model Transaction {
   source        String
   externalId    String?
   description   String
+  normalized    String?     // descrição "limpa" para exibição
   amountCents   Int
   occurredAt    DateTime
   importedAt    DateTime    @default(now())
 
-  // novo:
-  monthKey      String      // "YYYY-MM" (competência do controle)
+  monthKey      String      // "YYYY-MM"
   person        Person      @default(AMBOS)
+  wallet        Wallet      @default(SALARIO)
   paymentType   PaymentType @default(DEBITO_PIX)
 
   categoryId    String?
   category      Category?   @relation(fields: [categoryId], references: [id])
 
+  tags          String[]    @default([])
+
   categoryRaw   String?
   notes         String?
 
-  // parcelamento
   installmentCurrent Int?
   installmentTotal   Int?
 
-  // Dedup
   rowHash       String      @unique
 
   @@index([occurredAt])
   @@index([source])
   @@index([monthKey])
   @@index([person])
+  @@index([wallet])
   @@index([paymentType])
   @@index([categoryId])
 }
