@@ -7,19 +7,87 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Transaction {
-  id            String   @id @default(cuid())
-  source        String   // "nubank_credit", "nubank_account" etc.
-  externalId    String?  // se existir no CSV
-  description   String
-  categoryRaw   String?  // categoria como veio no CSV
-  amountCents   Int      // sempre em centavos (negativo = despesa; positivo = crédito)
-  occurredAt    DateTime
-  importedAt    DateTime @default(now())
+enum Person {
+  PEDRO
+  MIRELA
+  AMBOS
+}
 
-  // Dedup:
-  rowHash       String   @unique
+enum PaymentType {
+  DEBITO_PIX
+  CREDITO_A_VISTA
+  PARCELADO
+}
+
+enum IncomeType {
+  SALARIO
+  VALE_ALIMENTACAO
+  OUTROS
+  RESTANTE_MES_ANTERIOR
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  groupName String   // ex: "Saídas Fixas", "Saídas Alimentação", ...
+  name      String   // ex: "Aluguel", "Mercado (Vale)", ...
+  person    Person?  // null = geral; ou PEDRO/MIRELA se for "Pessoal"
+  isActive  Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions Transaction[]
+  @@index([groupName])
+  @@index([person])
+}
+
+model Income {
+  id          String     @id @default(cuid())
+  person      Person     // normalmente PEDRO/MIRELA/AMBOS
+  type        IncomeType
+  amountCents Int
+  monthKey    String     // "YYYY-MM" (competência)
+  notes       String?
+
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([monthKey])
+  @@index([person])
+  @@index([type])
+}
+
+model Transaction {
+  id            String      @id @default(cuid())
+  source        String
+  externalId    String?
+  description   String
+  amountCents   Int
+  occurredAt    DateTime
+  importedAt    DateTime    @default(now())
+
+  // novo:
+  monthKey      String      // "YYYY-MM" (competência do controle)
+  person        Person      @default(AMBOS)
+  paymentType   PaymentType @default(DEBITO_PIX)
+
+  categoryId    String?
+  category      Category?   @relation(fields: [categoryId], references: [id])
+
+  categoryRaw   String?
+  notes         String?
+
+  // parcelamento
+  installmentCurrent Int?
+  installmentTotal   Int?
+
+  // Dedup
+  rowHash       String      @unique
 
   @@index([occurredAt])
   @@index([source])
+  @@index([monthKey])
+  @@index([person])
+  @@index([paymentType])
+  @@index([categoryId])
 }
