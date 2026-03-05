@@ -17,6 +17,7 @@ enum PaymentType {
   DEBITO_PIX
   CREDITO_A_VISTA
   PARCELADO
+  IGNORAR
 }
 
 enum Wallet {
