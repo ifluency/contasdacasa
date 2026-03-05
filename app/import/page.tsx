@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 
+type Uploader = "PEDRO" | "MIRELA";
 type Person = "PEDRO" | "MIRELA" | "AMBOS";
 type Wallet = "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS";
 type PaymentType = "DEBITO_PIX" | "CREDITO_A_VISTA" | "PARCELADO" | "IGNORAR";
@@ -54,6 +55,10 @@ function formatBRL(cents: number): string {
   return (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
+function sourceLabel(source: string): string {
+  return source === "nubank_credit" ? "Fatura Cartão de Crédito" : "Cartão de Débito/PIX";
+}
+
 function groupIcon(groupName: string): string {
   const g = (groupName || "").toLowerCase();
   if (g.includes("fixa")) return "🏠";
@@ -69,7 +74,7 @@ function groupIcon(groupName: string): string {
 }
 
 function pill(cls: string) {
-  return `inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium border ${cls}`;
+  return `inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium border ${cls}`;
 }
 
 function pillPayment(p: PaymentType) {
@@ -83,6 +88,13 @@ function pillWallet(w: Wallet) {
   if (w === "SALARIO") return pill("bg-emerald-50 text-emerald-800 border-emerald-200");
   if (w === "VALE_ALIMENTACAO") return pill("bg-lime-50 text-lime-800 border-lime-200");
   return pill("bg-zinc-100 text-zinc-700 border-zinc-200");
+}
+
+function parseTags(s: string): string[] {
+  return (s || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
 }
 
 type RuleDraft = {
@@ -137,16 +149,98 @@ function defaultDraftForItem(it: PreviewItem): RuleDraft {
   };
 }
 
-function parseTags(s: string): string[] {
-  return (s || "")
-    .split(",")
-    .map((x) => x.trim())
-    .filter(Boolean);
+function keyOf(it: PreviewItem) {
+  return it.kind === "transaction" ? it.rowHash : it.previewId;
+}
+
+// Tags dropdown multi-select (opções sugeridas + criar novas)
+function TagsPicker({
+  value,
+  options,
+  onChange
+}: {
+  value: string[];
+  options: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [newTag, setNewTag] = useState("");
+
+  const selectedSet = useMemo(() => new Set(value), [value]);
+
+  function toggle(tag: string) {
+    const next = new Set(selectedSet);
+    if (next.has(tag)) next.delete(tag);
+    else next.add(tag);
+    onChange(Array.from(next));
+  }
+
+  function addNew() {
+    const t = newTag.trim();
+    if (!t) return;
+    const next = new Set(selectedSet);
+    next.add(t);
+    onChange(Array.from(next));
+    setNewTag("");
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        className="border rounded-lg px-3 py-2 text-xs w-full text-left bg-white"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {value.length ? `${value.length} tag(s)` : "Selecionar tags"}
+      </button>
+
+      {open && (
+        <div className="absolute z-20 mt-1 w-[320px] max-w-[50vw] bg-white border rounded-xl shadow-lg p-3">
+          <div className="text-xs font-semibold mb-2">Tags</div>
+
+          <div className="max-h-56 overflow-y-auto pr-1 space-y-1">
+            {options.map((tag) => (
+              <label key={tag} className="flex items-center gap-2 text-xs cursor-pointer">
+                <input type="checkbox" checked={selectedSet.has(tag)} onChange={() => toggle(tag)} />
+                <span className="break-words">{tag}</span>
+              </label>
+            ))}
+            {options.length === 0 && <div className="text-xs text-zinc-500">Sem sugestões ainda.</div>}
+          </div>
+
+          <div className="mt-3 border-t pt-3">
+            <div className="text-xs font-semibold mb-2">Adicionar nova</div>
+            <div className="flex gap-2">
+              <input
+                className="border rounded-lg p-2 text-xs w-full"
+                value={newTag}
+                onChange={(e) => setNewTag(e.target.value)}
+                placeholder="Ex.: Caixinha"
+              />
+              <button
+                type="button"
+                className="border rounded-lg px-3 py-2 text-xs bg-zinc-900 text-white"
+                onClick={addNew}
+              >
+                Add
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-3 flex justify-end">
+            <button type="button" className="text-xs underline" onClick={() => setOpen(false)}>
+              Fechar
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function ImportPage() {
   const [file, setFile] = useState<File | null>(null);
-  const [uploader, setUploader] = useState<Person>("AMBOS");
+  const [uploader, setUploader] = useState<Uploader>("MIRELA");
 
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string>("");
@@ -163,11 +257,18 @@ export default function ImportPage() {
     return m;
   }, [categories]);
 
-  const totalSelected = useMemo(() => Object.values(selected).filter(Boolean).length, [selected]);
+  // sugestões de tags derivadas das categorias (conforme você pediu)
+  // Ex.: "Saídas Lazer - Streaming", "Saídas Transporte - Uber/99"
+  const tagOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of categories) {
+      set.add(`${c.groupName} - ${c.name}`);
+      set.add(c.groupName);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [categories]);
 
-  function keyOf(it: PreviewItem) {
-    return it.kind === "transaction" ? it.rowHash : it.previewId;
-  }
+  const totalSelected = useMemo(() => Object.values(selected).filter(Boolean).length, [selected]);
 
   async function preview(e: React.FormEvent) {
     e.preventDefault();
@@ -196,7 +297,7 @@ export default function ImportPage() {
       const sel: Record<string, boolean> = {};
       const drafts: Record<string, RuleDraft> = {};
       for (const it of (json.items || []) as PreviewItem[]) {
-        const k = it.kind === "transaction" ? it.rowHash : it.previewId;
+        const k = keyOf(it);
         sel[k] = true;
         drafts[k] = { ...defaultDraftForItem(it), open: false };
       }
@@ -270,47 +371,38 @@ export default function ImportPage() {
   function closeRule(k: string) {
     setRuleDrafts((d) => ({ ...d, [k]: { ...(d[k] || ({ open: false } as any)), open: false } }));
   }
-
   function setDraft(k: string, patch: Partial<RuleDraft>) {
     setRuleDrafts((d) => ({ ...d, [k]: { ...(d[k] || ({} as any)), ...patch } }));
   }
 
-  // ✅ aplica o draft no item atual (efeito imediato na prévia), sem endpoint novo
   function applyDraftToThisLine(k: string) {
     const d = ruleDrafts[k];
     if (!d) return;
 
     setItems((prev) =>
       prev.map((it) => {
-        const id = keyOf(it);
-        if (id !== k) return it;
+        if (keyOf(it) !== k) return it;
 
-        // aplica somente quando "tipo do draft" é compatível com o item
         if (it.kind === "transaction" && d.target === "TRANSACTION") {
           const patch: Partial<PreviewTx> = {};
-
           if (d.renameTo.trim()) patch.normalized = d.renameTo.trim();
           if (d.categoryId) patch.categoryId = d.categoryId;
-
           const tags = parseTags(d.tags);
           if (tags.length) patch.tags = tags;
-
-          if (d.person) patch.person = d.person as Person;
-          if (d.wallet) patch.wallet = d.wallet as Wallet;
-          if (d.paymentType) patch.paymentType = d.paymentType as PaymentType;
-
+          if (d.person) patch.person = d.person as any;
+          if (d.wallet) patch.wallet = d.wallet as any;
+          if (d.paymentType) patch.paymentType = d.paymentType as any;
           return { ...it, ...patch } as PreviewTx;
         }
 
         if (it.kind === "income" && d.target === "INCOME") {
           const patch: Partial<PreviewIncome> = {};
-          if (d.person) patch.person = d.person as Person;
-          if (d.wallet) patch.wallet = d.wallet as Wallet;
-          if (d.incomeType) patch.incomeType = d.incomeType as IncomeType;
+          if (d.person) patch.person = d.person as any;
+          if (d.wallet) patch.wallet = d.wallet as any;
+          if (d.incomeType) patch.incomeType = d.incomeType as any;
           return { ...it, ...patch } as PreviewIncome;
         }
 
-        // Se você quiser futuramente: converter Transaction <-> Income, a gente implementa depois.
         return it;
       })
     );
@@ -387,8 +479,7 @@ export default function ImportPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <label className="text-sm font-medium">Quem está fazendo o upload?</label>
-              <select className="mt-1 w-full border rounded-lg p-2" value={uploader} onChange={(e) => setUploader(e.target.value as Person)}>
-                <option value="AMBOS">Ambos</option>
+              <select className="mt-1 w-full border rounded-lg p-2" value={uploader} onChange={(e) => setUploader(e.target.value as Uploader)}>
                 <option value="PEDRO">Pedro</option>
                 <option value="MIRELA">Mirela</option>
               </select>
@@ -414,6 +505,10 @@ export default function ImportPage() {
 
           {status && <div className="text-sm border rounded-lg p-3 bg-zinc-50">{status}</div>}
         </form>
+
+        <div className="mt-4 text-sm">
+          <a className="underline" href="/manual">Adicionar manualmente (sem CSV)</a>
+        </div>
       </section>
 
       {modalOpen && (
@@ -425,18 +520,12 @@ export default function ImportPage() {
               <div className="p-4 md:p-5 border-b flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="text-lg font-semibold">Prévia da importação</div>
-                  <div className="text-sm text-zinc-600">
-                    Selecione, edite, crie regras e confirme. Nada é gravado até confirmar.
-                  </div>
+                  <div className="text-sm text-zinc-600">Selecione, edite, crie regras e confirme.</div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
-                  <button className="text-sm underline" onClick={() => toggleAll(true)} disabled={loading}>
-                    Selecionar tudo
-                  </button>
-                  <button className="text-sm underline" onClick={() => toggleAll(false)} disabled={loading}>
-                    Limpar seleção
-                  </button>
+                  <button className="text-sm underline" onClick={() => toggleAll(true)} disabled={loading}>Selecionar tudo</button>
+                  <button className="text-sm underline" onClick={() => toggleAll(false)} disabled={loading}>Limpar seleção</button>
 
                   <div className="text-sm text-zinc-700 border rounded-lg px-3 py-2 bg-zinc-50">
                     Selecionados: <span className="font-semibold">{totalSelected}</span>
@@ -458,19 +547,30 @@ export default function ImportPage() {
 
               <div className="p-4 md:p-5 overflow-y-auto" style={{ maxHeight: "calc(100vh - 140px)" }}>
                 <div className="border rounded-xl overflow-hidden">
+                  {/* table-fixed + widths ajustadas para caber no modal sem precisar rolar a página */}
                   <table className="w-full text-sm table-fixed">
                     <thead className="bg-zinc-100">
                       <tr className="text-left">
-                        <th className="p-3 w-[56px]">✓</th>
-                        <th className="p-3 w-[92px]">Data</th>
-                        <th className="p-3 w-[320px]">Detalhes</th>
-                        <th className="p-3 w-[140px]">Pessoa</th>
-                        <th className="p-3 w-[170px]">Tipo</th>
-                        <th className="p-3 w-[160px]">Carteira</th>
-                        <th className="p-3 w-[240px]">Categoria</th>
+                        {/* 1 */}
+                        <th className="p-3 w-[46px]">✓</th>
+                        {/* 2 */}
+                        <th className="p-3 w-[80px] text-[11px]">Data</th>
+                        {/* 3 */}
+                        <th className="p-3 w-[360px]">Detalhes</th>
+                        {/* 4 */}
+                        <th className="p-3 w-[110px] text-right">Valor</th>
+                        {/* 5 */}
+                        <th className="p-3 w-[120px]">Pessoa</th>
+                        {/* 6 */}
+                        <th className="p-3 w-[160px]">Tipo</th>
+                        {/* 7 */}
+                        <th className="p-3 w-[140px]">Carteira</th>
+                        {/* 8 */}
+                        <th className="p-3 w-[210px]">Categoria</th>
+                        {/* 9 */}
                         <th className="p-3 w-[190px]">Tags</th>
-                        <th className="p-3 w-[220px]">Notas</th>
-                        <th className="p-3 w-[120px] text-right">Valor</th>
+                        {/* notas */}
+                        <th className="p-3 w-[170px]">Notas</th>
                       </tr>
                     </thead>
 
@@ -480,46 +580,36 @@ export default function ImportPage() {
                         const checked = !!selected[k];
                         const dateStr = new Intl.DateTimeFormat("pt-BR").format(new Date(it.occurredAt));
 
-                        const catLabel =
-                          it.kind === "transaction" && it.categoryId
-                            ? (() => {
-                                const c = categoriesById.get(it.categoryId!);
-                                if (!c) return "";
-                                return `${groupIcon(c.groupName)} ${c.groupName} — ${c.name}`;
-                              })()
-                            : "";
-
-                        const d = ruleDrafts[k];
-
                         return (
                           <>
                             <tr key={k} className={checked ? "" : "opacity-60"}>
+                              {/* 1 */}
                               <td className="p-3 align-top">
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={(e) => setSelected((s) => ({ ...s, [k]: e.target.checked }))}
-                                />
+                                <input type="checkbox" checked={checked} onChange={(e) => setSelected((s) => ({ ...s, [k]: e.target.checked }))} />
                               </td>
 
-                              <td className="p-3 align-top whitespace-nowrap">
+                              {/* 2 */}
+                              <td className="p-3 align-top whitespace-nowrap text-[11px] text-zinc-700">
                                 {dateStr}
                                 {it.kind === "transaction" && it.installmentCurrent && it.installmentTotal ? (
-                                  <div className="text-xs text-zinc-500">
-                                    Parc {it.installmentCurrent}/{it.installmentTotal}
+                                  <div className="text-[10px] text-zinc-500">
+                                    {it.installmentCurrent}/{it.installmentTotal}
                                   </div>
                                 ) : null}
                               </td>
 
+                              {/* 3 Detalhes */}
                               <td className="p-3 align-top">
                                 <div className="font-medium break-words">{it.description}</div>
-                                <div className="text-xs text-zinc-500 mt-1">{it.kind === "income" ? "Entrada (Income)" : it.source}</div>
+                                <div className="text-xs text-zinc-500 mt-1">
+                                  {sourceLabel(it.source)}
+                                </div>
 
                                 {it.kind === "transaction" ? (
                                   <div className="mt-2">
-                                    <div className="text-xs text-zinc-600 mb-1">Nome (exibição)</div>
+                                    <div className="text-[11px] text-zinc-600 mb-1">Nome (exibição)</div>
                                     <input
-                                      className="border rounded-lg p-2 w-full"
+                                      className="border rounded-lg p-2 text-xs w-[220px]"
                                       value={it.normalized}
                                       onChange={(e) => setTx(it.rowHash, { normalized: e.target.value })}
                                       placeholder="Ex.: Spotify"
@@ -528,28 +618,35 @@ export default function ImportPage() {
                                 ) : null}
 
                                 <div className="mt-2">
-                                  <button className="text-xs underline" onClick={() => openRule(k)}>
+                                  <button className="text-[11px] underline" onClick={() => openRule(k)}>
                                     ➕ Criar regra a partir desta linha
                                   </button>
                                 </div>
                               </td>
 
+                              {/* 4 Valor */}
+                              <td className="p-3 align-top text-right font-semibold whitespace-nowrap">
+                                {formatBRL(it.amountCents)}
+                              </td>
+
+                              {/* 5 Pessoa */}
                               <td className="p-3 align-top">
                                 <select
-                                  className="border rounded-lg p-2 w-full"
+                                  className="border rounded-lg p-2 text-xs w-full"
                                   value={it.person}
                                   onChange={(e) =>
                                     it.kind === "transaction"
-                                      ? setTx(it.rowHash, { person: e.target.value as Person })
-                                      : setIncome(it.previewId, { person: e.target.value as Person })
+                                      ? setTx(it.rowHash, { person: e.target.value as any })
+                                      : setIncome(it.previewId, { person: e.target.value as any })
                                   }
                                 >
-                                  <option value="AMBOS">Ambos</option>
                                   <option value="PEDRO">Pedro</option>
                                   <option value="MIRELA">Mirela</option>
+                                  <option value="AMBOS">Ambos</option>
                                 </select>
                               </td>
 
+                              {/* 6 Tipo */}
                               <td className="p-3 align-top">
                                 {it.kind === "transaction" ? (
                                   <>
@@ -560,9 +657,9 @@ export default function ImportPage() {
                                       {it.paymentType === "IGNORAR" ? "⚪ Ignorar" : null}
                                     </div>
                                     <select
-                                      className="border rounded-lg p-2 w-full mt-2"
+                                      className="border rounded-lg p-2 text-xs w-full mt-2"
                                       value={it.paymentType}
-                                      onChange={(e) => setTx(it.rowHash, { paymentType: e.target.value as PaymentType })}
+                                      onChange={(e) => setTx(it.rowHash, { paymentType: e.target.value as any })}
                                     >
                                       <option value="DEBITO_PIX">Débito/PIX</option>
                                       <option value="CREDITO_A_VISTA">Crédito à vista</option>
@@ -574,9 +671,9 @@ export default function ImportPage() {
                                   <>
                                     <div className={pill("bg-emerald-50 text-emerald-800 border-emerald-200")}>💵 Entrada</div>
                                     <select
-                                      className="border rounded-lg p-2 w-full mt-2"
+                                      className="border rounded-lg p-2 text-xs w-full mt-2"
                                       value={it.incomeType}
-                                      onChange={(e) => setIncome(it.previewId, { incomeType: e.target.value as IncomeType })}
+                                      onChange={(e) => setIncome(it.previewId, { incomeType: e.target.value as any })}
                                     >
                                       <option value="SALARIO">Salário</option>
                                       <option value="VALE_ALIMENTACAO">Vale Alimentação</option>
@@ -587,6 +684,7 @@ export default function ImportPage() {
                                 )}
                               </td>
 
+                              {/* 7 Carteira */}
                               <td className="p-3 align-top">
                                 <div className={pillWallet(it.wallet)}>
                                   {it.wallet === "SALARIO" ? "🟢 Salário" : null}
@@ -594,12 +692,12 @@ export default function ImportPage() {
                                   {it.wallet === "OUTROS" ? "⚫ Outros" : null}
                                 </div>
                                 <select
-                                  className="border rounded-lg p-2 w-full mt-2"
+                                  className="border rounded-lg p-2 text-xs w-full mt-2"
                                   value={it.wallet}
                                   onChange={(e) =>
                                     it.kind === "transaction"
-                                      ? setTx(it.rowHash, { wallet: e.target.value as Wallet })
-                                      : setIncome(it.previewId, { wallet: e.target.value as Wallet })
+                                      ? setTx(it.rowHash, { wallet: e.target.value as any })
+                                      : setIncome(it.previewId, { wallet: e.target.value as any })
                                   }
                                 >
                                   <option value="SALARIO">Salário</option>
@@ -608,67 +706,66 @@ export default function ImportPage() {
                                 </select>
                               </td>
 
+                              {/* 8 Categoria – somente dropdown */}
                               <td className="p-3 align-top">
                                 {it.kind === "transaction" ? (
-                                  <>
-                                    <select
-                                      className="border rounded-lg p-2 w-full"
-                                      value={it.categoryId ?? ""}
-                                      onChange={(e) => setTx(it.rowHash, { categoryId: e.target.value || null })}
-                                    >
-                                      <option value="">(sem categoria)</option>
-                                      {categories.map((c) => (
-                                        <option key={c.id} value={c.id}>
-                                          {groupIcon(c.groupName)} {c.groupName} — {c.name}
-                                        </option>
-                                      ))}
-                                    </select>
-                                    {it.categoryId ? <div className="text-xs text-zinc-500 mt-1 break-words">{catLabel}</div> : null}
-                                  </>
+                                  <select
+                                    className="border rounded-lg p-2 text-xs w-full"
+                                    value={it.categoryId ?? ""}
+                                    onChange={(e) => setTx(it.rowHash, { categoryId: e.target.value || null })}
+                                  >
+                                    <option value="">(sem categoria)</option>
+                                    {categories.map((c) => (
+                                      <option key={c.id} value={c.id}>
+                                        {groupIcon(c.groupName)} {c.groupName} — {c.name}
+                                      </option>
+                                    ))}
+                                  </select>
                                 ) : (
-                                  <div className="text-xs text-zinc-600">—</div>
+                                  <div className="text-xs text-zinc-500">—</div>
                                 )}
                               </td>
 
+                              {/* 9 Tags – dropdown multi */}
                               <td className="p-3 align-top">
                                 {it.kind === "transaction" ? (
-                                  <input
-                                    className="border rounded-lg p-2 w-full"
-                                    value={(it.tags || []).join(", ")}
-                                    onChange={(e) =>
-                                      setTx(it.rowHash, { tags: parseTags(e.target.value) })
-                                    }
-                                    placeholder="Ex.: Caixinha, Investimento"
-                                  />
+                                  <div className="text-xs">
+                                    <TagsPicker
+                                      value={it.tags || []}
+                                      options={tagOptions}
+                                      onChange={(next) => setTx(it.rowHash, { tags: next })}
+                                    />
+                                    <div className="text-[10px] text-zinc-500 mt-1 break-words">
+                                      {(it.tags || []).slice(0, 3).join(", ")}{(it.tags || []).length > 3 ? "…" : ""}
+                                    </div>
+                                  </div>
                                 ) : (
-                                  <div className="text-xs text-zinc-600">—</div>
+                                  <div className="text-xs text-zinc-500">—</div>
                                 )}
                               </td>
 
+                              {/* notas */}
                               <td className="p-3 align-top">
                                 <textarea
-                                  className="border rounded-lg p-2 w-full min-h-[44px]"
+                                  className="border rounded-lg p-2 text-xs w-full min-h-[44px]"
                                   value={it.notes ?? ""}
                                   onChange={(e) =>
                                     it.kind === "transaction"
                                       ? setTx(it.rowHash, { notes: e.target.value })
                                       : setIncome(it.previewId, { notes: e.target.value })
                                   }
-                                  placeholder="Observações (opcional)"
+                                  placeholder="Obs."
                                 />
-                              </td>
-
-                              <td className="p-3 align-top text-right font-semibold whitespace-nowrap">
-                                {formatBRL(it.amountCents)}
                               </td>
                             </tr>
 
-                            {d?.open ? (
+                            {/* editor de regra inline */}
+                            {ruleDrafts[k]?.open ? (
                               <tr key={`${k}-rule`}>
                                 <td colSpan={10} className="p-4 bg-zinc-50">
                                   <div className="flex flex-wrap items-center justify-between gap-3">
                                     <div className="font-semibold text-sm">Criar regra (para próximos imports)</div>
-                                    <button className="text-sm underline" onClick={() => closeRule(k)} disabled={d.saving}>
+                                    <button className="text-sm underline" onClick={() => closeRule(k)} disabled={ruleDrafts[k]?.saving}>
                                       Fechar
                                     </button>
                                   </div>
@@ -676,8 +773,8 @@ export default function ImportPage() {
                                   <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
                                     <div>
                                       <label className="text-xs font-medium">Alvo</label>
-                                      <select className="mt-1 w-full border rounded-lg p-2"
-                                        value={d.target}
+                                      <select className="mt-1 w-full border rounded-lg p-2 text-xs"
+                                        value={ruleDrafts[k].target}
                                         onChange={(e) => setDraft(k, { target: e.target.value as any })}
                                       >
                                         <option value="TRANSACTION">Transação</option>
@@ -687,8 +784,8 @@ export default function ImportPage() {
 
                                     <div>
                                       <label className="text-xs font-medium">Match</label>
-                                      <select className="mt-1 w-full border rounded-lg p-2"
-                                        value={d.matchType}
+                                      <select className="mt-1 w-full border rounded-lg p-2 text-xs"
+                                        value={ruleDrafts[k].matchType}
                                         onChange={(e) => setDraft(k, { matchType: e.target.value as any })}
                                       >
                                         <option value="CONTAINS">Contém</option>
@@ -699,40 +796,36 @@ export default function ImportPage() {
 
                                     <div>
                                       <label className="text-xs font-medium">Prioridade</label>
-                                      <input className="mt-1 w-full border rounded-lg p-2"
+                                      <input className="mt-1 w-full border rounded-lg p-2 text-xs"
                                         type="number"
-                                        value={d.priority}
+                                        value={ruleDrafts[k].priority}
                                         onChange={(e) => setDraft(k, { priority: Number(e.target.value) })}
                                       />
                                     </div>
 
                                     <div className="md:col-span-3">
                                       <label className="text-xs font-medium">Padrão (pattern)</label>
-                                      <input className="mt-1 w-full border rounded-lg p-2"
-                                        value={d.pattern}
+                                      <input className="mt-1 w-full border rounded-lg p-2 text-xs"
+                                        value={ruleDrafts[k].pattern}
                                         onChange={(e) => setDraft(k, { pattern: e.target.value })}
-                                        placeholder="Ex.: compra no débito - 99*"
                                       />
-                                      <div className="text-xs text-zinc-500 mt-1">
-                                        Dica: use um trecho estável (não precisa colar a linha inteira).
-                                      </div>
+                                      <div className="text-[11px] text-zinc-500 mt-1">Use um trecho estável (não precisa colar tudo).</div>
                                     </div>
 
-                                    {d.target === "TRANSACTION" ? (
+                                    {ruleDrafts[k].target === "TRANSACTION" ? (
                                       <>
                                         <div>
                                           <label className="text-xs font-medium">Renomear para</label>
-                                          <input className="mt-1 w-full border rounded-lg p-2"
-                                            value={d.renameTo}
+                                          <input className="mt-1 w-full border rounded-lg p-2 text-xs"
+                                            value={ruleDrafts[k].renameTo}
                                             onChange={(e) => setDraft(k, { renameTo: e.target.value })}
-                                            placeholder="Ex.: Uber"
                                           />
                                         </div>
 
                                         <div>
                                           <label className="text-xs font-medium">Categoria</label>
-                                          <select className="mt-1 w-full border rounded-lg p-2"
-                                            value={d.categoryId}
+                                          <select className="mt-1 w-full border rounded-lg p-2 text-xs"
+                                            value={ruleDrafts[k].categoryId}
                                             onChange={(e) => setDraft(k, { categoryId: e.target.value })}
                                           >
                                             <option value="">(nenhuma)</option>
@@ -746,30 +839,30 @@ export default function ImportPage() {
 
                                         <div>
                                           <label className="text-xs font-medium">Tags</label>
-                                          <input className="mt-1 w-full border rounded-lg p-2"
-                                            value={d.tags}
+                                          <input className="mt-1 w-full border rounded-lg p-2 text-xs"
+                                            value={ruleDrafts[k].tags}
                                             onChange={(e) => setDraft(k, { tags: e.target.value })}
-                                            placeholder="Ex.: Transporte, 99"
+                                            placeholder="Separadas por vírgula"
                                           />
                                         </div>
 
                                         <div>
                                           <label className="text-xs font-medium">Pessoa</label>
-                                          <select className="mt-1 w-full border rounded-lg p-2"
-                                            value={d.person}
+                                          <select className="mt-1 w-full border rounded-lg p-2 text-xs"
+                                            value={ruleDrafts[k].person}
                                             onChange={(e) => setDraft(k, { person: e.target.value as any })}
                                           >
                                             <option value="">(não setar)</option>
-                                            <option value="AMBOS">Ambos</option>
                                             <option value="PEDRO">Pedro</option>
                                             <option value="MIRELA">Mirela</option>
+                                            <option value="AMBOS">Ambos</option>
                                           </select>
                                         </div>
 
                                         <div>
                                           <label className="text-xs font-medium">Tipo</label>
-                                          <select className="mt-1 w-full border rounded-lg p-2"
-                                            value={d.paymentType}
+                                          <select className="mt-1 w-full border rounded-lg p-2 text-xs"
+                                            value={ruleDrafts[k].paymentType}
                                             onChange={(e) => setDraft(k, { paymentType: e.target.value as any })}
                                           >
                                             <option value="">(não setar)</option>
@@ -782,8 +875,8 @@ export default function ImportPage() {
 
                                         <div>
                                           <label className="text-xs font-medium">Carteira</label>
-                                          <select className="mt-1 w-full border rounded-lg p-2"
-                                            value={d.wallet}
+                                          <select className="mt-1 w-full border rounded-lg p-2 text-xs"
+                                            value={ruleDrafts[k].wallet}
                                             onChange={(e) => setDraft(k, { wallet: e.target.value as any })}
                                           >
                                             <option value="">(não setar)</option>
@@ -797,8 +890,8 @@ export default function ImportPage() {
                                       <>
                                         <div>
                                           <label className="text-xs font-medium">Income Type</label>
-                                          <select className="mt-1 w-full border rounded-lg p-2"
-                                            value={d.incomeType}
+                                          <select className="mt-1 w-full border rounded-lg p-2 text-xs"
+                                            value={ruleDrafts[k].incomeType}
                                             onChange={(e) => setDraft(k, { incomeType: e.target.value as any })}
                                           >
                                             <option value="">(obrigatório)</option>
@@ -811,21 +904,21 @@ export default function ImportPage() {
 
                                         <div>
                                           <label className="text-xs font-medium">Pessoa</label>
-                                          <select className="mt-1 w-full border rounded-lg p-2"
-                                            value={d.person}
+                                          <select className="mt-1 w-full border rounded-lg p-2 text-xs"
+                                            value={ruleDrafts[k].person}
                                             onChange={(e) => setDraft(k, { person: e.target.value as any })}
                                           >
                                             <option value="">(não setar)</option>
-                                            <option value="AMBOS">Ambos</option>
                                             <option value="PEDRO">Pedro</option>
                                             <option value="MIRELA">Mirela</option>
+                                            <option value="AMBOS">Ambos</option>
                                           </select>
                                         </div>
 
                                         <div>
                                           <label className="text-xs font-medium">Carteira</label>
-                                          <select className="mt-1 w-full border rounded-lg p-2"
-                                            value={d.wallet}
+                                          <select className="mt-1 w-full border rounded-lg p-2 text-xs"
+                                            value={ruleDrafts[k].wallet}
                                             onChange={(e) => setDraft(k, { wallet: e.target.value as any })}
                                           >
                                             <option value="">(não setar)</option>
@@ -838,13 +931,11 @@ export default function ImportPage() {
                                     )}
                                   </div>
 
-                                  {(d.error || d.ok) && (
-                                    <div
-                                      className={`mt-3 text-sm border rounded-lg p-3 ${
-                                        d.error ? "bg-red-50 border-red-200 text-red-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"
-                                      }`}
-                                    >
-                                      {d.error || d.ok}
+                                  {(ruleDrafts[k].error || ruleDrafts[k].ok) && (
+                                    <div className={`mt-3 text-sm border rounded-lg p-3 ${
+                                      ruleDrafts[k].error ? "bg-red-50 border-red-200 text-red-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"
+                                    }`}>
+                                      {ruleDrafts[k].error || ruleDrafts[k].ok}
                                     </div>
                                   )}
 
@@ -852,30 +943,30 @@ export default function ImportPage() {
                                     <button
                                       className="border rounded-lg px-4 py-2 bg-zinc-900 text-white disabled:opacity-50"
                                       onClick={() => saveRule(k, false)}
-                                      disabled={!!d.saving}
+                                      disabled={!!ruleDrafts[k].saving}
                                     >
-                                      {d.saving ? "Salvando..." : "Salvar regra"}
+                                      {ruleDrafts[k].saving ? "Salvando..." : "Salvar regra"}
                                     </button>
 
                                     <button
                                       className="border rounded-lg px-4 py-2 bg-white disabled:opacity-50"
                                       onClick={() => saveRule(k, true)}
-                                      disabled={!!d.saving}
+                                      disabled={!!ruleDrafts[k].saving}
                                     >
-                                      {d.saving ? "Salvando..." : "Salvar e aplicar nesta linha"}
+                                      {ruleDrafts[k].saving ? "Salvando..." : "Salvar e aplicar nesta linha"}
                                     </button>
 
                                     <button
                                       className="border rounded-lg px-4 py-2 bg-white"
                                       onClick={() => closeRule(k)}
-                                      disabled={!!d.saving}
+                                      disabled={!!ruleDrafts[k].saving}
                                     >
                                       Cancelar
                                     </button>
                                   </div>
 
                                   <div className="mt-2 text-xs text-zinc-500">
-                                    “Salvar e aplicar” muda apenas esta linha na prévia (sem reprocessar o arquivo inteiro).
+                                    “Salvar e aplicar” muda apenas esta linha na prévia.
                                   </div>
                                 </td>
                               </tr>
