@@ -5,7 +5,7 @@ import { applyRules, cleanDisplayName } from "@/lib/rulesEngine";
 
 export const runtime = "nodejs";
 
-type Person = "PEDRO" | "MIRELA" | "AMBOS";
+type Person = "PEDRO" | "MIRELA";
 type Wallet = "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS";
 type PaymentType = "DEBITO_PIX" | "CREDITO_A_VISTA" | "PARCELADO" | "IGNORAR";
 type IncomeType = "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS" | "RESTANTE_MES_ANTERIOR";
@@ -21,7 +21,7 @@ type PreviewItem =
       description: string;
       normalized: string;
       amountCents: number;
-      person: Person;
+      person: "PEDRO" | "MIRELA" | "AMBOS";
       wallet: Wallet;
       paymentType: PaymentType;
       categoryId: string | null;
@@ -39,24 +39,22 @@ type PreviewItem =
       monthKey: string;
       description: string;
       amountCents: number;
-      person: Person;
+      person: "PEDRO" | "MIRELA" | "AMBOS";
       wallet: Wallet;
       incomeType: IncomeType;
       notes: string | null;
     };
 
-function asPerson(v: string | null): Person {
+function asUploader(v: string | null): Person {
   const x = (v || "").toUpperCase().trim();
-  if (x === "PEDRO") return "PEDRO";
-  if (x === "MIRELA") return "MIRELA";
-  return "AMBOS";
+  return x === "PEDRO" ? "PEDRO" : "MIRELA";
 }
 
 export async function POST(req: Request) {
   try {
     const form = await req.formData();
     const file = form.get("file");
-    const uploader = asPerson(form.get("uploader")?.toString() ?? null);
+    const uploader = asUploader(form.get("uploader")?.toString() ?? null);
 
     if (!file || !(file instanceof File)) {
       return NextResponse.json({ ok: false, error: "Envie um arquivo CSV no campo 'file'." }, { status: 400 });
@@ -89,13 +87,12 @@ export async function POST(req: Request) {
       const isAccount = p.source === "nubank_account";
       const isPositive = p.amountCents > 0;
 
-      // Conta + positivo: tenta INCOME
       if (isAccount && isPositive) {
         const actIncome = await applyRules("INCOME", originalDesc);
 
         if (actIncome.incomeType) {
-          const person: Person = (actIncome.person as any) ?? uploader ?? "AMBOS";
-          const wallet: Wallet =
+          const person = ((actIncome.person ?? uploader) as any) as "PEDRO" | "MIRELA" | "AMBOS";
+          const wallet =
             ((actIncome.wallet ??
               (actIncome.incomeType === "VALE_ALIMENTACAO" ? "VALE_ALIMENTACAO" : "SALARIO")) as any) ?? "SALARIO";
 
@@ -117,19 +114,17 @@ export async function POST(req: Request) {
             incomeType: actIncome.incomeType as any,
             notes: null
           });
-
           continue;
         }
       }
 
-      // TRANSACTION
       const actTx = await applyRules("TRANSACTION", originalDesc);
 
       const normalized = actTx.renameTo?.trim() ? actTx.renameTo.trim() : baseNormalized;
 
       const paymentType: PaymentType = ((actTx.paymentType ?? p.paymentType) as any) ?? "DEBITO_PIX";
-      const person: Person = ((actTx.person ?? uploader ?? "AMBOS") as any) ?? "AMBOS";
-      const wallet: Wallet = ((actTx.wallet ?? "SALARIO") as any) ?? "SALARIO";
+      const person = ((actTx.person ?? uploader) as any) as "PEDRO" | "MIRELA" | "AMBOS";
+      const wallet = ((actTx.wallet ?? "SALARIO") as any) as Wallet;
       const categoryId = (actTx.categoryId ?? null) as string | null;
       const tags = (actTx.tags ?? []) as string[];
 
