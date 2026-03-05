@@ -16,7 +16,7 @@ type Rule = {
   tags: string[];
 
   person: "PEDRO" | "MIRELA" | "AMBOS" | null;
-  paymentType: "DEBITO_PIX" | "CREDITO_A_VISTA" | "PARCELADO" | null;
+  paymentType: "DEBITO_PIX" | "CREDITO_A_VISTA" | "PARCELADO" | "IGNORAR" | null;
   wallet: "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS" | null;
 
   incomeType: "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS" | "RESTANTE_MES_ANTERIOR" | null;
@@ -27,7 +27,7 @@ async function safeJson(res: Response): Promise<any> {
   try {
     return JSON.parse(text);
   } catch {
-    return { ok: false, error: `Resposta não-JSON (${res.status}). Provável 404/500. Trecho: ${text.slice(0, 200)}` };
+    return { ok: false, error: `Resposta não-JSON (${res.status}). Trecho: ${text.slice(0, 200)}` };
   }
 }
 
@@ -37,7 +37,6 @@ export default function RulesPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [statusMsg, setStatusMsg] = useState<string>("");
 
-  // form
   const [target, setTarget] = useState<Rule["target"]>("TRANSACTION");
   const [matchType, setMatchType] = useState<Rule["matchType"]>("CONTAINS");
   const [pattern, setPattern] = useState("");
@@ -127,7 +126,6 @@ export default function RulesPage() {
       });
 
       const json = await safeJson(res);
-
       if (!json.ok) {
         setStatusMsg(json.error || "Erro ao criar regra.");
         setLoading(false);
@@ -136,7 +134,6 @@ export default function RulesPage() {
 
       setStatusMsg("Regra adicionada ✅");
 
-      // reset form (mantém target/matchType/priority)
       setPattern("");
       setRenameTo("");
       setCategoryId("");
@@ -206,17 +203,16 @@ export default function RulesPage() {
           <div>
             <label className="text-sm font-medium">Prioridade</label>
             <input className="mt-1 w-full border rounded-lg p-2" type="number" value={priority} onChange={(e) => setPriority(Number(e.target.value))} />
-            <div className="text-xs text-zinc-500 mt-1">Menor aplica primeiro (ex.: 10 &gt; 100).</div>
           </div>
 
           <div className="md:col-span-3">
             <label className="text-sm font-medium">Padrão</label>
-            <input className="mt-1 w-full border rounded-lg p-2" value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder="Ex.: dm*spotify" />
+            <input className="mt-1 w-full border rounded-lg p-2" value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder="Ex.: pagamento de fatura" />
           </div>
 
           <div>
             <label className="text-sm font-medium">Renomear para</label>
-            <input className="mt-1 w-full border rounded-lg p-2" value={renameTo} onChange={(e) => setRenameTo(e.target.value)} placeholder="Ex.: Spotify" />
+            <input className="mt-1 w-full border rounded-lg p-2" value={renameTo} onChange={(e) => setRenameTo(e.target.value)} placeholder="Ex.: Pagamento de fatura (ignorar)" />
           </div>
 
           <div>
@@ -231,7 +227,7 @@ export default function RulesPage() {
 
           <div>
             <label className="text-sm font-medium">Tags (vírgula)</label>
-            <input className="mt-1 w-full border rounded-lg p-2" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Ex.: Lazer, Streaming" />
+            <input className="mt-1 w-full border rounded-lg p-2" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Ex.: Ignorar" />
           </div>
 
           <div>
@@ -251,6 +247,7 @@ export default function RulesPage() {
               <option value="DEBITO_PIX">Débito/PIX</option>
               <option value="CREDITO_A_VISTA">Crédito à vista</option>
               <option value="PARCELADO">Parcelado</option>
+              <option value="IGNORAR">Ignorar</option>
             </select>
           </div>
 
