@@ -137,6 +137,13 @@ function defaultDraftForItem(it: PreviewItem): RuleDraft {
   };
 }
 
+function parseTags(s: string): string[] {
+  return (s || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
 export default function ImportPage() {
   const [file, setFile] = useState<File | null>(null);
   const [uploader, setUploader] = useState<Person>("AMBOS");
@@ -240,11 +247,15 @@ export default function ImportPage() {
   }
 
   function setTx(rowHash: string, patch: Partial<PreviewTx>) {
-    setItems((prev) => prev.map((it) => (it.kind === "transaction" && it.rowHash === rowHash ? ({ ...it, ...patch } as PreviewTx) : it)));
+    setItems((prev) =>
+      prev.map((it) => (it.kind === "transaction" && it.rowHash === rowHash ? ({ ...it, ...patch } as PreviewTx) : it))
+    );
   }
 
   function setIncome(previewId: string, patch: Partial<PreviewIncome>) {
-    setItems((prev) => prev.map((it) => (it.kind === "income" && it.previewId === previewId ? ({ ...it, ...patch } as PreviewIncome) : it)));
+    setItems((prev) =>
+      prev.map((it) => (it.kind === "income" && it.previewId === previewId ? ({ ...it, ...patch } as PreviewIncome) : it))
+    );
   }
 
   function toggleAll(v: boolean) {
@@ -254,17 +265,58 @@ export default function ImportPage() {
   }
 
   function openRule(k: string) {
-    setRuleDrafts((d) => ({ ...d, [k]: { ...(d[k] || { open: true } as any), open: true, error: "", ok: "" } }));
+    setRuleDrafts((d) => ({ ...d, [k]: { ...(d[k] || ({ open: true } as any)), open: true, error: "", ok: "" } }));
   }
   function closeRule(k: string) {
-    setRuleDrafts((d) => ({ ...d, [k]: { ...(d[k] || { open: false } as any), open: false } }));
+    setRuleDrafts((d) => ({ ...d, [k]: { ...(d[k] || ({ open: false } as any)), open: false } }));
   }
 
   function setDraft(k: string, patch: Partial<RuleDraft>) {
     setRuleDrafts((d) => ({ ...d, [k]: { ...(d[k] || ({} as any)), ...patch } }));
   }
 
-  async function saveRule(k: string) {
+  // ✅ aplica o draft no item atual (efeito imediato na prévia), sem endpoint novo
+  function applyDraftToThisLine(k: string) {
+    const d = ruleDrafts[k];
+    if (!d) return;
+
+    setItems((prev) =>
+      prev.map((it) => {
+        const id = keyOf(it);
+        if (id !== k) return it;
+
+        // aplica somente quando "tipo do draft" é compatível com o item
+        if (it.kind === "transaction" && d.target === "TRANSACTION") {
+          const patch: Partial<PreviewTx> = {};
+
+          if (d.renameTo.trim()) patch.normalized = d.renameTo.trim();
+          if (d.categoryId) patch.categoryId = d.categoryId;
+
+          const tags = parseTags(d.tags);
+          if (tags.length) patch.tags = tags;
+
+          if (d.person) patch.person = d.person as Person;
+          if (d.wallet) patch.wallet = d.wallet as Wallet;
+          if (d.paymentType) patch.paymentType = d.paymentType as PaymentType;
+
+          return { ...it, ...patch } as PreviewTx;
+        }
+
+        if (it.kind === "income" && d.target === "INCOME") {
+          const patch: Partial<PreviewIncome> = {};
+          if (d.person) patch.person = d.person as Person;
+          if (d.wallet) patch.wallet = d.wallet as Wallet;
+          if (d.incomeType) patch.incomeType = d.incomeType as IncomeType;
+          return { ...it, ...patch } as PreviewIncome;
+        }
+
+        // Se você quiser futuramente: converter Transaction <-> Income, a gente implementa depois.
+        return it;
+      })
+    );
+  }
+
+  async function saveRule(k: string, applyNow: boolean) {
     const d = ruleDrafts[k];
     if (!d) return;
 
@@ -286,10 +338,7 @@ export default function ImportPage() {
       if (d.renameTo.trim()) payload.renameTo = d.renameTo.trim();
       if (d.categoryId) payload.categoryId = d.categoryId;
 
-      payload.tags = d.tags
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
+      payload.tags = parseTags(d.tags);
 
       if (d.person) payload.person = d.person;
       if (d.wallet) payload.wallet = d.wallet;
@@ -315,7 +364,12 @@ export default function ImportPage() {
         return;
       }
 
-      setDraft(k, { saving: false, ok: "Regra criada ✅ (ela vale para próximos imports)" });
+      if (applyNow) {
+        applyDraftToThisLine(k);
+        setDraft(k, { saving: false, ok: "Regra criada ✅ e aplicada nesta linha (prévia)." });
+      } else {
+        setDraft(k, { saving: false, ok: "Regra criada ✅ (vale para próximos imports)." });
+      }
     } catch (err: any) {
       setDraft(k, { saving: false, error: err?.message || "Erro ao criar regra." });
     }
@@ -367,7 +421,6 @@ export default function ImportPage() {
           <div className="absolute inset-0 bg-black/40" onClick={() => !loading && setModalOpen(false)} />
 
           <div className="absolute inset-0 p-3 md:p-6 flex items-center justify-center">
-            {/* 75% da largura da tela */}
             <div className="w-[75vw] max-w-[1400px] bg-white rounded-2xl border shadow-xl overflow-hidden">
               <div className="p-4 md:p-5 border-b flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -403,9 +456,7 @@ export default function ImportPage() {
                 </div>
               </div>
 
-              {/* Scroll vertical dentro do modal */}
               <div className="p-4 md:p-5 overflow-y-auto" style={{ maxHeight: "calc(100vh - 140px)" }}>
-                {/* Tabela sem exigir scroll horizontal da página: colunas com wrap e layout compacto */}
                 <div className="border rounded-xl overflow-hidden">
                   <table className="w-full text-sm table-fixed">
                     <thead className="bg-zinc-100">
@@ -462,9 +513,7 @@ export default function ImportPage() {
 
                               <td className="p-3 align-top">
                                 <div className="font-medium break-words">{it.description}</div>
-                                <div className="text-xs text-zinc-500 mt-1">
-                                  {it.kind === "income" ? "Entrada (Income)" : it.source}
-                                </div>
+                                <div className="text-xs text-zinc-500 mt-1">{it.kind === "income" ? "Entrada (Income)" : it.source}</div>
 
                                 {it.kind === "transaction" ? (
                                   <div className="mt-2">
@@ -587,12 +636,7 @@ export default function ImportPage() {
                                     className="border rounded-lg p-2 w-full"
                                     value={(it.tags || []).join(", ")}
                                     onChange={(e) =>
-                                      setTx(it.rowHash, {
-                                        tags: e.target.value
-                                          .split(",")
-                                          .map((x) => x.trim())
-                                          .filter(Boolean)
-                                      })
+                                      setTx(it.rowHash, { tags: parseTags(e.target.value) })
                                     }
                                     placeholder="Ex.: Caixinha, Investimento"
                                   />
@@ -619,7 +663,6 @@ export default function ImportPage() {
                               </td>
                             </tr>
 
-                            {/* editor de regra inline */}
                             {d?.open ? (
                               <tr key={`${k}-rule`}>
                                 <td colSpan={10} className="p-4 bg-zinc-50">
@@ -796,18 +839,30 @@ export default function ImportPage() {
                                   </div>
 
                                   {(d.error || d.ok) && (
-                                    <div className={`mt-3 text-sm border rounded-lg p-3 ${d.error ? "bg-red-50 border-red-200 text-red-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
+                                    <div
+                                      className={`mt-3 text-sm border rounded-lg p-3 ${
+                                        d.error ? "bg-red-50 border-red-200 text-red-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"
+                                      }`}
+                                    >
                                       {d.error || d.ok}
                                     </div>
                                   )}
 
-                                  <div className="mt-3 flex gap-2">
+                                  <div className="mt-3 flex flex-wrap gap-2">
                                     <button
                                       className="border rounded-lg px-4 py-2 bg-zinc-900 text-white disabled:opacity-50"
-                                      onClick={() => saveRule(k)}
+                                      onClick={() => saveRule(k, false)}
                                       disabled={!!d.saving}
                                     >
                                       {d.saving ? "Salvando..." : "Salvar regra"}
+                                    </button>
+
+                                    <button
+                                      className="border rounded-lg px-4 py-2 bg-white disabled:opacity-50"
+                                      onClick={() => saveRule(k, true)}
+                                      disabled={!!d.saving}
+                                    >
+                                      {d.saving ? "Salvando..." : "Salvar e aplicar nesta linha"}
                                     </button>
 
                                     <button
@@ -817,6 +872,10 @@ export default function ImportPage() {
                                     >
                                       Cancelar
                                     </button>
+                                  </div>
+
+                                  <div className="mt-2 text-xs text-zinc-500">
+                                    “Salvar e aplicar” muda apenas esta linha na prévia (sem reprocessar o arquivo inteiro).
                                   </div>
                                 </td>
                               </tr>
