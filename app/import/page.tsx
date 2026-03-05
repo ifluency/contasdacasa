@@ -556,9 +556,9 @@ export default function ImportPage() {
                         {/* 2 */}
                         <th className="p-3 w-[80px] text-[11px]">Data</th>
                         {/* 3 */}
-                        <th className="p-3 w-[360px]">Detalhes</th>
+                        <th className="p-3 w-[280px]">Detalhes</th>
                         {/* 4 */}
-                        <th className="p-3 w-[110px] text-right">Valor</th>
+                        <th className="p-3 w-[120px] text-right">Valor</th>
                         {/* 5 */}
                         <th className="p-3 w-[120px]">Pessoa</th>
                         {/* 6 */}
@@ -568,7 +568,7 @@ export default function ImportPage() {
                         {/* 8 */}
                         <th className="p-3 w-[210px]">Categoria</th>
                         {/* 9 */}
-                        <th className="p-3 w-[190px]">Tags</th>
+                        <th className="p-3 w-[260px]">Tags</th>
                         {/* notas */}
                         <th className="p-3 w-[170px]">Notas</th>
                       </tr>
