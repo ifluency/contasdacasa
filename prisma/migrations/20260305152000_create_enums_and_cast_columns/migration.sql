@@ -26,9 +26,10 @@ BEGIN
   END IF;
 END $$;
 
--- Cast existing TEXT columns to enum types where applicable.
+-- Category.person (no default, but safe)
+ALTER TABLE "Category"
+  ALTER COLUMN "person" DROP DEFAULT;
 
--- Category.person
 ALTER TABLE "Category"
   ALTER COLUMN "person" TYPE "Person"
   USING CASE
@@ -36,7 +37,11 @@ ALTER TABLE "Category"
     ELSE "person"::"Person"
   END;
 
--- Transaction enums
+-- Transaction defaults must be handled
+ALTER TABLE "Transaction" ALTER COLUMN "person" DROP DEFAULT;
+ALTER TABLE "Transaction" ALTER COLUMN "paymentType" DROP DEFAULT;
+ALTER TABLE "Transaction" ALTER COLUMN "wallet" DROP DEFAULT;
+
 ALTER TABLE "Transaction"
   ALTER COLUMN "person" TYPE "Person" USING "person"::"Person";
 
@@ -46,7 +51,15 @@ ALTER TABLE "Transaction"
 ALTER TABLE "Transaction"
   ALTER COLUMN "wallet" TYPE "Wallet" USING "wallet"::"Wallet";
 
--- Income enums
+ALTER TABLE "Transaction" ALTER COLUMN "person" SET DEFAULT 'AMBOS'::"Person";
+ALTER TABLE "Transaction" ALTER COLUMN "paymentType" SET DEFAULT 'DEBITO_PIX'::"PaymentType";
+ALTER TABLE "Transaction" ALTER COLUMN "wallet" SET DEFAULT 'SALARIO'::"Wallet";
+
+-- Income defaults
+ALTER TABLE "Income" ALTER COLUMN "person" DROP DEFAULT;
+ALTER TABLE "Income" ALTER COLUMN "type" DROP DEFAULT;
+ALTER TABLE "Income" ALTER COLUMN "wallet" DROP DEFAULT;
+
 ALTER TABLE "Income"
   ALTER COLUMN "person" TYPE "Person" USING "person"::"Person";
 
@@ -56,7 +69,18 @@ ALTER TABLE "Income"
 ALTER TABLE "Income"
   ALTER COLUMN "wallet" TYPE "Wallet" USING "wallet"::"Wallet";
 
--- IncomeTemplate enums
+ALTER TABLE "Income" ALTER COLUMN "wallet" SET DEFAULT 'SALARIO'::"Wallet";
+
+-- IncomeTemplate (no defaults, but safe)
+ALTER TABLE "IncomeTemplate"
+  ALTER COLUMN "person" DROP DEFAULT;
+
+ALTER TABLE "IncomeTemplate"
+  ALTER COLUMN "type" DROP DEFAULT;
+
+ALTER TABLE "IncomeTemplate"
+  ALTER COLUMN "wallet" DROP DEFAULT;
+
 ALTER TABLE "IncomeTemplate"
   ALTER COLUMN "person" TYPE "Person" USING "person"::"Person";
 
@@ -66,7 +90,14 @@ ALTER TABLE "IncomeTemplate"
 ALTER TABLE "IncomeTemplate"
   ALTER COLUMN "wallet" TYPE "Wallet" USING "wallet"::"Wallet";
 
--- Rule enums
+-- Rule table columns
+ALTER TABLE "Rule" ALTER COLUMN "target" DROP DEFAULT;
+ALTER TABLE "Rule" ALTER COLUMN "matchType" DROP DEFAULT;
+ALTER TABLE "Rule" ALTER COLUMN "person" DROP DEFAULT;
+ALTER TABLE "Rule" ALTER COLUMN "paymentType" DROP DEFAULT;
+ALTER TABLE "Rule" ALTER COLUMN "wallet" DROP DEFAULT;
+ALTER TABLE "Rule" ALTER COLUMN "incomeType" DROP DEFAULT;
+
 ALTER TABLE "Rule"
   ALTER COLUMN "target" TYPE "RuleTarget" USING "target"::"RuleTarget";
 
