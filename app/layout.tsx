@@ -13,13 +13,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <header className="flex flex-wrap items-center justify-between gap-3 mb-6">
             <div>
               <h1 className="text-xl font-semibold">Finanças do Casal</h1>
-              <p className="text-sm text-zinc-600">Importar Nubank (CSV) • Categorias • Resumo por mês</p>
+              <p className="text-sm text-zinc-600">Importar • Regras • Classificar • Resumo</p>
             </div>
-            <nav className="flex gap-3 text-sm">
+            <nav className="flex flex-wrap gap-3 text-sm">
               <a className="underline" href="/">Dashboard</a>
               <a className="underline" href="/import">Importar CSV</a>
               <a className="underline" href="/transactions">Transações</a>
               <a className="underline" href="/categories">Categorias</a>
+              <a className="underline" href="/rules">Regras</a>
+              <a className="underline" href="/classify">Classificar</a>
             </nav>
           </header>
 
