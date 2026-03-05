@@ -13,47 +13,54 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Envie um arquivo CSV no campo 'file'." }, { status: 400 });
     }
 
-    const source = (form.get("source")?.toString() || "nubank_credit").trim();
-
     const text = await file.text();
     if (!text || text.length < 10) {
       return NextResponse.json({ ok: false, error: "CSV vazio ou inválido." }, { status: 400 });
     }
 
-    const txs = parseNubankCsv(text, source);
+    const txs = parseNubankCsv(text);
 
     if (txs.length === 0) {
-      return NextResponse.json({
-        ok: false,
-        error: "Não consegui extrair transações desse CSV. Verifique se é o export do Nubank e se contém colunas de data/descrição/valor."
-      }, { status: 422 });
+      return NextResponse.json(
+        { ok: false, error: "Não consegui extrair transações desse CSV. Verifique se contém colunas de data/descrição/valor." },
+        { status: 422 }
+      );
     }
 
-    // Insert com dedup (rowHash é unique)
     let inserted = 0;
     let skipped = 0;
 
     for (const t of txs) {
       try {
-        await prisma.transaction.create({ data: t });
+        await prisma.transaction.create({
+          data: {
+            source: t.source,
+            externalId: t.externalId,
+            description: t.description,
+            categoryRaw: t.categoryRaw,
+            amountCents: t.amountCents,
+            occurredAt: t.occurredAt,
+            monthKey: t.monthKey,
+            paymentType: t.paymentType,
+            installmentCurrent: t.installmentCurrent ?? null,
+            installmentTotal: t.installmentTotal ?? null,
+            rowHash: t.rowHash,
+            person: "AMBOS"
+          }
+        });
         inserted++;
-      } catch (e: any) {
-        // Unique violation => já existe
+      } catch {
         skipped++;
       }
     }
 
     return NextResponse.json({
       ok: true,
-      source,
       parsed: txs.length,
       inserted,
       skipped
     });
   } catch (err: any) {
-    return NextResponse.json(
-      { ok: false, error: err?.message || "Erro inesperado." },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: err?.message || "Erro inesperado." }, { status: 500 });
   }
 }
