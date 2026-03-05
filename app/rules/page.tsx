@@ -22,10 +22,20 @@ type Rule = {
   incomeType: "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS" | "RESTANTE_MES_ANTERIOR" | null;
 };
 
+async function safeJson(res: Response): Promise<any> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { ok: false, error: `Resposta não-JSON (${res.status}). Provável 404/500. Trecho: ${text.slice(0, 200)}` };
+  }
+}
+
 export default function RulesPage() {
   const [loading, setLoading] = useState(false);
   const [rules, setRules] = useState<Rule[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [statusMsg, setStatusMsg] = useState<string>("");
 
   // form
   const [target, setTarget] = useState<Rule["target"]>("TRANSACTION");
@@ -45,11 +55,24 @@ export default function RulesPage() {
 
   async function load() {
     setLoading(true);
-    const res = await fetch("/api/rules");
-    const json = await res.json();
-    setRules(json.items || []);
-    setCategories(json.categories || []);
-    setLoading(false);
+    setStatusMsg("");
+    try {
+      const res = await fetch("/api/rules", { cache: "no-store" });
+      const json = await safeJson(res);
+
+      if (!json.ok) {
+        setStatusMsg(json.error || "Erro ao carregar regras.");
+        setRules([]);
+        setCategories([]);
+      } else {
+        setRules(json.items || []);
+        setCategories(json.categories || []);
+      }
+    } catch (e: any) {
+      setStatusMsg(e?.message || "Falha ao carregar /api/rules");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -65,57 +88,87 @@ export default function RulesPage() {
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
+    setLoading(true);
+    setStatusMsg("");
 
-    const payload: any = {
-      target,
-      matchType,
-      pattern: pattern.trim(),
-      priority: Number(priority)
-    };
+    try {
+      const payload: any = {
+        target,
+        matchType,
+        pattern: pattern.trim(),
+        priority: Number(priority)
+      };
 
-    if (renameTo.trim()) payload.renameTo = renameTo.trim();
-    if (categoryId) payload.categoryId = categoryId;
+      if (renameTo.trim()) payload.renameTo = renameTo.trim();
+      if (categoryId) payload.categoryId = categoryId;
 
-    const tagList = tags
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
-    payload.tags = tagList;
+      payload.tags = tags
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
 
-    if (person) payload.person = person;
-    if (paymentType) payload.paymentType = paymentType;
-    if (wallet) payload.wallet = wallet;
+      if (person) payload.person = person;
+      if (paymentType) payload.paymentType = paymentType;
+      if (wallet) payload.wallet = wallet;
 
-    if (target === "INCOME" && incomeType) payload.incomeType = incomeType;
+      if (target === "INCOME") {
+        if (!incomeType) {
+          setStatusMsg("Para alvo INCOME, selecione o tipo de entrada (incomeType).");
+          setLoading(false);
+          return;
+        }
+        payload.incomeType = incomeType;
+      }
 
-    const res = await fetch("/api/rules", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+      const res = await fetch("/api/rules", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload)
+      });
 
-    const json = await res.json();
-    if (!json.ok) {
-      alert(json.error || "Erro ao criar regra.");
-      return;
+      const json = await safeJson(res);
+
+      if (!json.ok) {
+        setStatusMsg(json.error || "Erro ao criar regra.");
+        setLoading(false);
+        return;
+      }
+
+      setStatusMsg("Regra adicionada ✅");
+
+      // reset form (mantém target/matchType/priority)
+      setPattern("");
+      setRenameTo("");
+      setCategoryId("");
+      setTags("");
+      setPerson("");
+      setPaymentType("");
+      setWallet("");
+      setIncomeType("");
+
+      await load();
+    } catch (e: any) {
+      setStatusMsg(e?.message || "Falha ao criar regra.");
+    } finally {
+      setLoading(false);
     }
-
-    setPattern("");
-    setRenameTo("");
-    setCategoryId("");
-    setTags("");
-    setPerson("");
-    setPaymentType("");
-    setWallet("");
-    setIncomeType("");
-
-    await load();
   }
 
   async function remove(id: string) {
     if (!confirm("Desativar regra?")) return;
-    await fetch(`/api/rules/${id}`, { method: "DELETE" });
-    await load();
+    setLoading(true);
+    setStatusMsg("");
+    try {
+      const res = await fetch(`/api/rules/${id}`, { method: "DELETE" });
+      const json = await safeJson(res);
+      if (!json.ok) setStatusMsg(json.error || "Erro ao desativar regra.");
+      else setStatusMsg("Regra desativada ✅");
+      await load();
+    } catch (e: any) {
+      setStatusMsg(e?.message || "Falha ao desativar regra.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -125,6 +178,12 @@ export default function RulesPage() {
         <p className="text-sm text-zinc-600 mt-1">
           Use regras para renomear descrições e aplicar categoria/tags/pessoa/carteira automaticamente no import.
         </p>
+
+        {statusMsg && (
+          <div className="mt-3 border rounded-lg p-3 text-sm bg-zinc-50">
+            {statusMsg}
+          </div>
+        )}
 
         <form onSubmit={create} className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
           <div>
@@ -171,7 +230,7 @@ export default function RulesPage() {
           </div>
 
           <div>
-            <label className="text-sm font-medium">Tags (separadas por vírgula)</label>
+            <label className="text-sm font-medium">Tags (vírgula)</label>
             <input className="mt-1 w-full border rounded-lg p-2" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Ex.: Lazer, Streaming" />
           </div>
 
@@ -200,7 +259,7 @@ export default function RulesPage() {
             <select className="mt-1 w-full border rounded-lg p-2" value={wallet} onChange={(e) => setWallet(e.target.value)}>
               <option value="">(não alterar)</option>
               <option value="SALARIO">Salário</option>
-              <option value="VALE_ALIMENTACAO">Vale Alimentação</option>
+              <option value="VALE_ALIMENTACAO">Vale</option>
               <option value="OUTROS">Outros</option>
             </select>
           </div>
@@ -220,7 +279,7 @@ export default function RulesPage() {
 
           <div className="md:col-span-3">
             <button className="border rounded-lg px-4 py-2 bg-zinc-900 text-white disabled:opacity-50" disabled={!pattern.trim() || loading}>
-              Adicionar regra
+              {loading ? "Salvando..." : "Adicionar Regra"}
             </button>
           </div>
         </form>
@@ -243,7 +302,7 @@ export default function RulesPage() {
                 </div>
                 <div className="text-xs text-zinc-600 mt-1">
                   {r.renameTo ? `Rename: ${r.renameTo} • ` : ""}
-                  {r.categoryId ? `Categoria: ${r.categoryId} • ` : ""}
+                  {r.categoryId ? `CategoriaId: ${r.categoryId} • ` : ""}
                   {r.tags?.length ? `Tags: ${r.tags.join(", ")} • ` : ""}
                   {r.person ? `Pessoa: ${r.person} • ` : ""}
                   {r.paymentType ? `Tipo: ${r.paymentType} • ` : ""}
