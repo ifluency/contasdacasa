@@ -5,6 +5,11 @@ import { applyRules, cleanDisplayName } from "@/lib/rulesEngine";
 
 export const runtime = "nodejs";
 
+type Person = "PEDRO" | "MIRELA" | "AMBOS";
+type Wallet = "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS";
+type PaymentType = "DEBITO_PIX" | "CREDITO_A_VISTA" | "PARCELADO" | "IGNORAR";
+type IncomeType = "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS" | "RESTANTE_MES_ANTERIOR";
+
 type PreviewItem =
   | {
       kind: "transaction";
@@ -16,19 +21,17 @@ type PreviewItem =
       description: string;
       normalized: string;
       amountCents: number;
-      person: "PEDRO" | "MIRELA" | "AMBOS";
-      wallet: "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS";
-      paymentType: "DEBITO_PIX" | "CREDITO_A_VISTA" | "PARCELADO" | "IGNORAR";
+      person: Person;
+      wallet: Wallet;
+      paymentType: PaymentType;
       categoryId: string | null;
       tags: string[];
       installmentCurrent: number | null;
       installmentTotal: number | null;
       notes: string | null;
-      applied: { target: "TRANSACTION"; matched: boolean };
     }
   | {
       kind: "income";
-      // income não tem rowHash, mas colocamos um id determinístico pra UI
       previewId: string;
       source: string;
       externalId: string | null;
@@ -36,17 +39,24 @@ type PreviewItem =
       monthKey: string;
       description: string;
       amountCents: number;
-      person: "PEDRO" | "MIRELA" | "AMBOS";
-      wallet: "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS";
-      incomeType: "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS" | "RESTANTE_MES_ANTERIOR";
+      person: Person;
+      wallet: Wallet;
+      incomeType: IncomeType;
       notes: string | null;
-      applied: { target: "INCOME"; matched: boolean };
     };
+
+function asPerson(v: string | null): Person {
+  const x = (v || "").toUpperCase().trim();
+  if (x === "PEDRO") return "PEDRO";
+  if (x === "MIRELA") return "MIRELA";
+  return "AMBOS";
+}
 
 export async function POST(req: Request) {
   try {
     const form = await req.formData();
     const file = form.get("file");
+    const uploader = asPerson(form.get("uploader")?.toString() ?? null);
 
     if (!file || !(file instanceof File)) {
       return NextResponse.json({ ok: false, error: "Envie um arquivo CSV no campo 'file'." }, { status: 400 });
@@ -65,7 +75,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // categorias para dropdown
     const categories = await prisma.category.findMany({
       where: { isActive: true },
       orderBy: [{ groupName: "asc" }, { name: "asc" }]
@@ -80,16 +89,15 @@ export async function POST(req: Request) {
       const isAccount = p.source === "nubank_account";
       const isPositive = p.amountCents > 0;
 
-      // Se for conta + positivo, tenta regra INCOME
+      // Conta + positivo: tenta INCOME
       if (isAccount && isPositive) {
         const actIncome = await applyRules("INCOME", originalDesc);
+
         if (actIncome.incomeType) {
-          const person = ((actIncome.person ?? "AMBOS") as any) as "PEDRO" | "MIRELA" | "AMBOS";
-          const wallet = ((actIncome.wallet ??
-            (actIncome.incomeType === "VALE_ALIMENTACAO" ? "VALE_ALIMENTACAO" : "SALARIO")) as any) as
-            | "SALARIO"
-            | "VALE_ALIMENTACAO"
-            | "OUTROS";
+          const person: Person = (actIncome.person as any) ?? uploader ?? "AMBOS";
+          const wallet: Wallet =
+            ((actIncome.wallet ??
+              (actIncome.incomeType === "VALE_ALIMENTACAO" ? "VALE_ALIMENTACAO" : "SALARIO")) as any) ?? "SALARIO";
 
           const previewId = `income|${p.monthKey}|${person}|${actIncome.incomeType}|${p.amountCents}|${originalDesc
             .toLowerCase()
@@ -107,25 +115,21 @@ export async function POST(req: Request) {
             person,
             wallet,
             incomeType: actIncome.incomeType as any,
-            notes: originalDesc,
-            applied: { target: "INCOME", matched: true }
+            notes: null
           });
 
           continue;
         }
       }
 
-      // Caso geral: TRANSACTION
+      // TRANSACTION
       const actTx = await applyRules("TRANSACTION", originalDesc);
 
-      const normalized =
-        actTx.renameTo?.trim() ? actTx.renameTo.trim() : baseNormalized;
+      const normalized = actTx.renameTo?.trim() ? actTx.renameTo.trim() : baseNormalized;
 
-      const paymentType =
-        (actTx.paymentType ?? p.paymentType) as any as "DEBITO_PIX" | "CREDITO_A_VISTA" | "PARCELADO" | "IGNORAR";
-
-      const person = ((actTx.person ?? "AMBOS") as any) as "PEDRO" | "MIRELA" | "AMBOS";
-      const wallet = ((actTx.wallet ?? "SALARIO") as any) as "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS";
+      const paymentType: PaymentType = ((actTx.paymentType ?? p.paymentType) as any) ?? "DEBITO_PIX";
+      const person: Person = ((actTx.person ?? uploader ?? "AMBOS") as any) ?? "AMBOS";
+      const wallet: Wallet = ((actTx.wallet ?? "SALARIO") as any) ?? "SALARIO";
       const categoryId = (actTx.categoryId ?? null) as string | null;
       const tags = (actTx.tags ?? []) as string[];
 
@@ -146,16 +150,11 @@ export async function POST(req: Request) {
         tags,
         installmentCurrent: p.installmentCurrent ?? null,
         installmentTotal: p.installmentTotal ?? null,
-        notes: null,
-        applied: { target: "TRANSACTION", matched: true }
+        notes: null
       });
     }
 
-    return NextResponse.json({
-      ok: true,
-      categories,
-      items
-    });
+    return NextResponse.json({ ok: true, categories, items });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message || "Erro inesperado." }, { status: 500 });
   }
