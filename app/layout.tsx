@@ -22,6 +22,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <a className="underline" href="/categories">Categorias</a>
               <a className="underline" href="/rules">Regras</a>
               <a className="underline" href="/classify">Classificar</a>
+              <a className="underline" href="/manual">Manual</a>
             </nav>
           </header>
 
