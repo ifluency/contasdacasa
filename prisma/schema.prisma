@@ -45,15 +45,19 @@ enum RuleMatchType {
 
 model Category {
   id        String   @id @default(cuid())
-  groupName String   // ex: "Saídas Fixas"
-  name      String   // ex: "Aluguel"
-  person    Person?  // null = geral; ou PEDRO/MIRELA se for "Pessoal"
+  groupName String
+  name      String
+  person    Person?
   isActive  Boolean  @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   transactions Transaction[]
+
+  // ✅ backrelation que faltava
+  rules Rule[]
+
   @@index([groupName])
   @@index([person])
 }
@@ -64,10 +68,9 @@ model Rule {
 
   target        RuleTarget
   matchType     RuleMatchType
-  pattern       String        // texto ou regex
-  priority      Int           @default(100) // menor = aplica primeiro
+  pattern       String
+  priority      Int           @default(100)
 
-  // ações (opcionais)
   renameTo      String?
   categoryId    String?
   category      Category?     @relation(fields: [categoryId], references: [id])
@@ -77,7 +80,6 @@ model Rule {
   paymentType   PaymentType?
   wallet        Wallet?
 
-  // para income:
   incomeType    IncomeType?
 
   createdAt     DateTime      @default(now())
@@ -93,7 +95,7 @@ model Income {
   type        IncomeType
   wallet      Wallet     @default(SALARIO)
   amountCents Int
-  monthKey    String     // "YYYY-MM"
+  monthKey    String
   notes       String?
 
   createdAt   DateTime   @default(now())
@@ -127,12 +129,12 @@ model Transaction {
   source        String
   externalId    String?
   description   String
-  normalized    String?     // descrição "limpa" para exibição
+  normalized    String?
   amountCents   Int
   occurredAt    DateTime
   importedAt    DateTime    @default(now())
 
-  monthKey      String      // "YYYY-MM"
+  monthKey      String
   person        Person      @default(AMBOS)
   wallet        Wallet      @default(SALARIO)
   paymentType   PaymentType @default(DEBITO_PIX)
