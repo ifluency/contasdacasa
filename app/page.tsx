@@ -21,8 +21,8 @@ async function getMonthOptions(): Promise<string[]> {
     distinct: ["monthKey"],
     orderBy: { monthKey: "desc" }
   });
-  const keys = rows.map((r) => r.monthKey);
 
+  const keys = rows.map((r) => r.monthKey);
   const now = new Date();
   const current = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
   if (!keys.includes(current)) keys.unshift(current);
@@ -30,16 +30,18 @@ async function getMonthOptions(): Promise<string[]> {
   return keys.slice(0, 36);
 }
 
-function sumCents(arr: { amountCents: number }[]): number {
+function sumAbsCents(rows: any[]): number {
   let s = 0;
-  for (const a of arr) s += a.amountCents || 0;
+  for (const t of rows) s += Math.abs(t.amountCents || 0);
   return s;
 }
 
-function isExpense(amountCents: number) {
-  // Se você usa despesas positivas em algum CSV, ajuste aqui.
-  // Hoje a conta costuma vir negativa e cartão positivo; mas na prática você controla pelo paymentType+wallet.
-  return true;
+function safeName(t: any) {
+  return (t.normalized?.trim() ? t.normalized : t.description) as string;
+}
+
+function formatDateBR(d: Date) {
+  return new Intl.DateTimeFormat("pt-BR").format(d);
 }
 
 function filterPersonTx(allTx: any[], person: Person) {
@@ -50,24 +52,11 @@ function filterByType(allTx: any[], type: string) {
   return allTx.filter((t) => t.paymentType === type);
 }
 
-function centsAbs(n: number) {
-  return Math.abs(n);
-}
-
-function safeName(t: any) {
-  return (t.normalized?.trim() ? t.normalized : t.description) as string;
-}
-
-function formatDateBR(iso: Date) {
-  return new Intl.DateTimeFormat("pt-BR").format(iso);
-}
-
 export default async function Page({ searchParams }: { searchParams?: { mes?: string } }) {
   const options = await getMonthOptions();
   const monthKey =
     searchParams?.mes && options.includes(searchParams.mes) ? searchParams.mes : options[0];
 
-  // Entradas do mês (Income)
   const incomes = await prisma.income.findMany({
     where: { monthKey },
     orderBy: [{ person: "asc" }, { type: "asc" }]
@@ -86,10 +75,10 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
     else if (inc.type === "VALE_ALIMENTACAO") incomeByPerson[p].vale += inc.amountCents;
     else if (inc.type === "OUTROS") incomeByPerson[p].outros += inc.amountCents;
     else if (inc.type === "RESTANTE_MES_ANTERIOR") incomeByPerson[p].restante += inc.amountCents;
+
     incomeByPerson[p].total += inc.amountCents;
   }
 
-  // Transações do mês (inclui categorias)
   const tx = await prisma.transaction.findMany({
     where: { monthKey },
     include: { category: true },
@@ -97,18 +86,16 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
     take: 2000
   });
 
-  // Ignorar não entra em gastos (ex.: pagamento fatura, caixinha, etc.)
   const txEffective = tx.filter((t) => t.paymentType !== "IGNORAR");
 
-  // Contas fixas divididas (assumindo: AMBOS + group "Saídas Fixas")
+  // ✅ FIXAS DIVIDIDAS: tag + AMBOS
   const fixedShared = txEffective.filter(
-    (t) => t.person === "AMBOS" && (t.category?.groupName || "") === "Saídas Fixas"
+    (t) => t.person === "AMBOS" && (t.tags || []).includes("Fixa Dividida")
   );
 
-  const fixedSharedTotal = sumCents(fixedShared.map((t) => ({ amountCents: centsAbs(t.amountCents) })));
+  const fixedSharedTotal = sumAbsCents(fixedShared);
   const fixedSharedHalf = Math.round(fixedSharedTotal / 2);
 
-  // Totais por pessoa (sem incluir fixas compartilhadas automaticamente; vamos mostrar separado e você decide)
   function computePersonSummary(person: Person) {
     const pTx = filterPersonTx(txEffective, person);
 
@@ -116,51 +103,28 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
     const credit = filterByType(pTx, "CREDITO_A_VISTA");
     const parcel = filterByType(pTx, "PARCELADO");
 
-    const debitTotal = sumCents(debit.map((t) => ({ amountCents: centsAbs(t.amountCents) })));
-    const creditTotal = sumCents(credit.map((t) => ({ amountCents: centsAbs(t.amountCents) })));
-    const parcelTotal = sumCents(parcel.map((t) => ({ amountCents: centsAbs(t.amountCents) })));
+    const debitTotal = sumAbsCents(debit);
+    const creditTotal = sumAbsCents(credit);
+    const parcelTotal = sumAbsCents(parcel);
 
     const custosAVista = debitTotal + creditTotal;
     const custosParcelados = parcelTotal;
     const gastosTotais = custosAVista + custosParcelados;
 
     const entradas = incomeByPerson[person].total;
-
-    // saldo restante (como planilha): entradas - gastos - metade das fixas divididas
     const saldoRestante = entradas - gastosTotais - fixedSharedHalf;
 
-    return {
-      debit,
-      credit,
-      parcel,
-      debitTotal,
-      creditTotal,
-      parcelTotal,
-      custosAVista,
-      custosParcelados,
-      gastosTotais,
-      entradas,
-      saldoRestante
-    };
+    return { debit, credit, parcel, custosAVista, custosParcelados, gastosTotais, entradas, saldoRestante };
   }
 
   const mirela = computePersonSummary("MIRELA");
   const pedro = computePersonSummary("PEDRO");
 
-  // Renda conjunta do mês
   const rendaConjunta = incomeByPerson.PEDRO.total + incomeByPerson.MIRELA.total;
-  const pctPedro = rendaConjunta ? (incomeByPerson.PEDRO.total / rendaConjunta) : 0;
-  const pctMirela = rendaConjunta ? (incomeByPerson.MIRELA.total / rendaConjunta) : 0;
+  const pctPedro = rendaConjunta ? incomeByPerson.PEDRO.total / rendaConjunta : 0;
+  const pctMirela = rendaConjunta ? incomeByPerson.MIRELA.total / rendaConjunta : 0;
 
-  function TxTable({
-    title,
-    rows,
-    showParcelInfo
-  }: {
-    title: string;
-    rows: any[];
-    showParcelInfo?: boolean;
-  }) {
+  function TxTable({ title, rows, showParcelInfo }: { title: string; rows: any[]; showParcelInfo?: boolean }) {
     return (
       <div className="border rounded-lg overflow-hidden bg-white">
         <div className="bg-zinc-100 px-3 py-2 text-xs font-semibold">{title}</div>
@@ -171,7 +135,7 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
                 <th className="p-2">Descrição</th>
                 <th className="p-2 w-[110px] text-right">Valor (R$)</th>
                 {showParcelInfo ? <th className="p-2 w-[90px] text-right">Parcela</th> : null}
-                <th className="p-2 w-[140px]">Cat</th>
+                <th className="p-2 w-[160px]">Cat</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -181,7 +145,7 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
                     <div className="font-medium">{safeName(t)}</div>
                     <div className="text-[10px] text-zinc-500">{formatDateBR(t.occurredAt)}</div>
                   </td>
-                  <td className="p-2 text-right font-semibold whitespace-nowrap">{formatBRL(centsAbs(t.amountCents))}</td>
+                  <td className="p-2 text-right font-semibold whitespace-nowrap">{formatBRL(Math.abs(t.amountCents))}</td>
                   {showParcelInfo ? (
                     <td className="p-2 text-right whitespace-nowrap">
                       {t.installmentCurrent && t.installmentTotal ? `${t.installmentCurrent}/${t.installmentTotal}` : "-"}
@@ -203,9 +167,7 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
           </table>
         </div>
         {rows.length > 30 ? (
-          <div className="px-3 py-2 text-[10px] text-zinc-500 bg-zinc-50">
-            Mostrando 30 de {rows.length}.
-          </div>
+          <div className="px-3 py-2 text-[10px] text-zinc-500 bg-zinc-50">Mostrando 30 de {rows.length}.</div>
         ) : null}
       </div>
     );
@@ -213,14 +175,11 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
 
   return (
     <main className="space-y-4">
-      {/* Header + filtro mes/ano */}
       <section className="bg-white rounded-xl border p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold">Resumo</h2>
-            <p className="text-sm text-zinc-600">
-              {monthLabel(monthKey)}
-            </p>
+            <p className="text-sm text-zinc-600">{monthLabel(monthKey)}</p>
           </div>
 
           <form action="/" className="flex items-center gap-2">
@@ -230,18 +189,13 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
                 <option key={k} value={k}>{monthLabel(k)}</option>
               ))}
             </select>
-            <button className="border rounded-lg px-3 py-2 text-sm bg-zinc-900 text-white">
-              Aplicar
-            </button>
+            <button className="border rounded-lg px-3 py-2 text-sm bg-zinc-900 text-white">Aplicar</button>
           </form>
         </div>
       </section>
 
-      {/* Layout estilo planilha */}
       <section className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4">
-        {/* Sidebar (como a planilha) */}
         <div className="space-y-4">
-          {/* SALÁRIOS */}
           <div className="bg-white rounded-xl border overflow-hidden">
             <div className="bg-emerald-100 px-4 py-2 font-semibold text-sm">SALÁRIOS</div>
             <div className="p-4 text-sm space-y-3">
@@ -273,7 +227,7 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
 
               <div className="text-xs text-zinc-600">
                 <div className="flex justify-between">
-                  <span>Renda conjunta do mês</span>
+                  <span>Renda conjunta</span>
                   <span className="font-semibold">{formatBRL(rendaConjunta)}</span>
                 </div>
                 <div className="flex justify-between">
@@ -288,7 +242,6 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
             </div>
           </div>
 
-          {/* CONTAS FIXAS DIVIDIDAS */}
           <div className="bg-white rounded-xl border overflow-hidden">
             <div className="bg-sky-100 px-4 py-2 font-semibold text-sm">CONTAS FIXAS DIVIDIDAS</div>
 
@@ -305,14 +258,16 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
                     <tr key={t.id}>
                       <td className="p-2">
                         <div className="font-medium">{safeName(t)}</div>
-                        <div className="text-[10px] text-zinc-500">{t.category ? t.category.name : "-"}</div>
+                        <div className="text-[10px] text-zinc-500">{t.category ? t.category.name : "Fixa Dividida"}</div>
                       </td>
-                      <td className="p-2 text-right font-semibold whitespace-nowrap">{formatBRL(centsAbs(t.amountCents))}</td>
+                      <td className="p-2 text-right font-semibold whitespace-nowrap">{formatBRL(Math.abs(t.amountCents))}</td>
                     </tr>
                   ))}
                   {fixedShared.length === 0 ? (
                     <tr>
-                      <td className="p-3 text-zinc-500" colSpan={2}>Sem contas fixas no mês (critério: AMBOS + Saídas Fixas).</td>
+                      <td className="p-3 text-zinc-500" colSpan={2}>
+                        Nenhuma conta fixa dividida (use o botão “Dividir 50/50” no import).
+                      </td>
                     </tr>
                   ) : null}
                 </tbody>
@@ -332,9 +287,7 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
           </div>
         </div>
 
-        {/* Painéis Mirela e Pedro */}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {/* MIRELA */}
           <div className="bg-white rounded-xl border overflow-hidden">
             <div className="bg-violet-100 px-4 py-2 font-semibold text-sm text-center">MIRELA</div>
 
@@ -365,7 +318,6 @@ export default async function Page({ searchParams }: { searchParams?: { mes?: st
             </div>
           </div>
 
-          {/* PEDRO */}
           <div className="bg-white rounded-xl border overflow-hidden">
             <div className="bg-rose-100 px-4 py-2 font-semibold text-sm text-center">PEDRO</div>
 
