@@ -511,7 +511,7 @@ export default function ImportPage() {
           <div className="absolute inset-0 bg-black/40" onClick={() => !loading && setModalOpen(false)} />
 
           <div className="absolute inset-0 p-3 md:p-6 flex items-center justify-center">
-            <div className="w-[75vw] max-w-[1400px] bg-white rounded-2xl border shadow-xl overflow-hidden">
+            <div className="w-[90vw] max-w-[1700px] bg-white rounded-2xl border shadow-xl overflow-hidden">
               <div className="p-4 md:p-5 border-b flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="text-lg font-semibold">Prévia da importação</div>
