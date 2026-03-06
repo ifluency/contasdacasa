@@ -16,7 +16,9 @@ function formatMonthKey(dateStr: string): string {
 }
 
 function toCents(v: string): number {
-  const s = v.trim().replace(/\s/g, "").replace("R$", "").replace(",", ".");
+  const raw = (v ?? "").toString().trim();
+  if (!raw) return 0;
+  const s = raw.replace(/\s/g, "").replace(/^R\$/i, "").replace(",", ".");
   const n = Number(s);
   if (Number.isNaN(n)) return 0;
   return Math.round(n * 100);
@@ -37,6 +39,8 @@ export default function ManualPage() {
   const [categoryId, setCategoryId] = useState<string>("");
   const [tags, setTags] = useState<string>("");
 
+  const [split5050, setSplit5050] = useState(false);
+
   const monthKey = useMemo(() => formatMonthKey(date), [date]);
 
   useEffect(() => {
@@ -51,6 +55,12 @@ export default function ManualPage() {
   async function save() {
     setStatus("");
 
+    const baseTags = tags.split(",").map(t => t.trim()).filter(Boolean);
+    const finalTags = new Set(baseTags);
+
+    const finalPerson: Person = split5050 ? "AMBOS" : person;
+    if (split5050) finalTags.add("Fixa Dividida");
+
     const item = {
       kind: "transaction",
       rowHash: `manual|${Date.now()}|${Math.random().toString(16).slice(2)}`,
@@ -61,11 +71,11 @@ export default function ManualPage() {
       description,
       normalized: normalized || description,
       amountCents: toCents(amount),
-      person,
+      person: finalPerson,
       wallet,
       paymentType,
       categoryId: categoryId || null,
-      tags: tags.split(",").map(t => t.trim()).filter(Boolean),
+      tags: Array.from(finalTags),
       installmentCurrent: null,
       installmentTotal: null,
       notes: null
@@ -89,6 +99,7 @@ export default function ManualPage() {
     setAmount("0.00");
     setCategoryId("");
     setTags("");
+    setSplit5050(false);
   }
 
   return (
@@ -120,13 +131,23 @@ export default function ManualPage() {
             <input className="mt-1 w-full border rounded-lg p-2" value={normalized} onChange={(e) => setNormalized(e.target.value)} placeholder="Opcional" />
           </div>
 
+          <div className="md:col-span-2 flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={split5050}
+              onChange={(e) => setSplit5050(e.target.checked)}
+            />
+            <span className="text-sm">Dividir 50/50 (conta fixa dividida)</span>
+          </div>
+
           <div>
             <label className="text-sm font-medium">Pessoa</label>
-            <select className="mt-1 w-full border rounded-lg p-2" value={person} onChange={(e) => setPerson(e.target.value as Person)}>
+            <select className="mt-1 w-full border rounded-lg p-2" value={person} onChange={(e) => setPerson(e.target.value as Person)} disabled={split5050}>
               <option value="PEDRO">Pedro</option>
               <option value="MIRELA">Mirela</option>
               <option value="AMBOS">Ambos</option>
             </select>
+            {split5050 && <div className="text-xs text-zinc-500 mt-1">Com “Dividir 50/50”, Pessoa fica automaticamente “Ambos”.</div>}
           </div>
 
           <div>
@@ -163,6 +184,9 @@ export default function ManualPage() {
           <div className="md:col-span-2">
             <label className="text-sm font-medium">Tags (vírgula)</label>
             <input className="mt-1 w-full border rounded-lg p-2" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Ex.: Transporte, Uber" />
+            <div className="text-xs text-zinc-500 mt-1">
+              Se “Dividir 50/50” estiver marcado, adiciona automaticamente a tag <b>Fixa Dividida</b>.
+            </div>
           </div>
         </div>
 
