@@ -32,6 +32,16 @@ type PreviewTx = {
   installmentCurrent: number | null;
   installmentTotal: number | null;
   notes: string | null;
+  suggestion?: {
+    categoryId: string;
+    confidence: number;
+    sourceDescription: string;
+    suggestedNormalized?: string;
+    suggestedPerson?: Person;
+    suggestedWallet?: Wallet;
+    suggestedPaymentType?: PaymentType;
+    suggestedTags: string[];
+  };
 };
 
 type PreviewIncome = {
@@ -153,6 +163,44 @@ function keyOf(it: PreviewItem) {
   return it.kind === "transaction" ? it.rowHash : it.previewId;
 }
 
+function tokenizeSimple(desc: string): string[] {
+  const NOISE = new Set(["pix", "pag", "dm", "ifd", "pg"]);
+  return desc
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .split(/[\s*\/\-\.]+/)
+    .map((t) => t.replace(/[^a-z0-9]/g, ""))
+    .filter((t) => t.length >= 3)
+    .filter((t) => !/^\d{6,}$/.test(t))
+    .filter((t) => !NOISE.has(t));
+}
+
+function draftFromSuggestion(
+  it: PreviewTx,
+  s: NonNullable<PreviewTx["suggestion"]>
+): RuleDraft {
+  const newTokens = tokenizeSimple(it.description);
+  const srcTokens = tokenizeSimple(s.sourceDescription);
+  const shared = newTokens.filter((t) => srcTokens.includes(t));
+  const pattern = shared.length > 0 ? shared[0] : it.description.slice(0, 40).trim();
+
+  return {
+    open: true,
+    target: "TRANSACTION",
+    matchType: "CONTAINS",
+    pattern,
+    priority: 20,
+    renameTo: s.suggestedNormalized ?? it.normalized,
+    categoryId: s.categoryId,
+    tags: (s.suggestedTags ?? []).join(", "),
+    person: s.suggestedPerson ?? it.person,
+    paymentType: s.suggestedPaymentType ?? it.paymentType,
+    wallet: s.suggestedWallet ?? it.wallet,
+    incomeType: "",
+  };
+}
+
 // Tags dropdown multi-select (opções sugeridas + criar novas)
 function TagsPicker({
   value,
@@ -250,6 +298,7 @@ export default function ImportPage() {
   const [items, setItems] = useState<PreviewItem[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [ruleDrafts, setRuleDrafts] = useState<Record<string, RuleDraft>>({});
+  const [acceptedSuggestions, setAcceptedSuggestions] = useState<Set<string>>(new Set());
 
   // sugestões de tags derivadas das categorias
   const tagOptions = useMemo(() => {
@@ -306,6 +355,24 @@ export default function ImportPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function acceptSuggestion(rowHash: string, s: NonNullable<PreviewTx["suggestion"]>) {
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.kind !== "transaction" || it.rowHash !== rowHash) return it;
+        return {
+          ...it,
+          categoryId: s.categoryId,
+          normalized: s.suggestedNormalized ?? it.normalized,
+          person: s.suggestedPerson ?? it.person,
+          wallet: s.suggestedWallet ?? it.wallet,
+          paymentType: s.suggestedPaymentType ?? it.paymentType,
+          tags: s.suggestedTags.length ? s.suggestedTags : it.tags,
+        };
+      })
+    );
+    setAcceptedSuggestions((prev) => new Set([...prev, rowHash]));
   }
 
   async function commit() {
@@ -566,7 +633,7 @@ export default function ImportPage() {
 
                         return (
                           <>
-                            <tr key={k} className={checked ? "" : "opacity-60"}>
+                            <tr key={k} className={`${checked ? "" : "opacity-60"} ${it.kind === "transaction" && it.suggestion && !it.categoryId ? "bg-amber-50" : ""}`}>
                               <td className="p-3 align-top">
                                 <input type="checkbox" checked={checked} onChange={(e) => setSelected((s) => ({ ...s, [k]: e.target.checked }))} />
                               </td>
@@ -713,6 +780,37 @@ export default function ImportPage() {
                                     <div className="text-[10px] text-zinc-500 mt-1">
                                       Define Pessoa = <b>Ambos</b> e adiciona tag <b>Fixa Dividida</b>.
                                     </div>
+
+                                    {it.suggestion && !it.categoryId && (
+                                      <div className="mt-2 flex items-center gap-2">
+                                        <span className="text-[11px] text-amber-700 font-medium">
+                                          💡 {categories.find((c) => c.id === it.suggestion!.categoryId)?.name ?? "Sugestão"}{" "}
+                                          · {Math.round(it.suggestion.confidence * 100)}%
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => acceptSuggestion(it.rowHash, it.suggestion!)}
+                                          className="text-[11px] text-amber-800 underline hover:text-amber-900"
+                                        >
+                                          Aceitar
+                                        </button>
+                                      </div>
+                                    )}
+
+                                    {acceptedSuggestions.has(it.rowHash) && it.suggestion && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setRuleDrafts((prev) => ({
+                                            ...prev,
+                                            [k]: draftFromSuggestion(it, it.suggestion!),
+                                          }))
+                                        }
+                                        className="mt-1 text-[11px] text-blue-600 underline hover:text-blue-800"
+                                      >
+                                        Criar regra para futuras importações →
+                                      </button>
+                                    )}
                                   </>
                                 ) : (
                                   <div className="text-xs text-zinc-500">—</div>
