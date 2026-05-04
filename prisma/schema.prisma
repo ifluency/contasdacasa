@@ -1,0 +1,163 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Person {
+  PEDRO
+  MIRELA
+  AMBOS
+}
+
+enum PaymentType {
+  DEBITO_PIX
+  CREDITO_A_VISTA
+  PARCELADO
+  IGNORAR
+}
+
+enum Wallet {
+  SALARIO
+  VALE_ALIMENTACAO
+  OUTROS
+}
+
+enum IncomeType {
+  SALARIO
+  VALE_ALIMENTACAO
+  OUTROS
+  RESTANTE_MES_ANTERIOR
+}
+
+enum RuleTarget {
+  TRANSACTION
+  INCOME
+}
+
+enum RuleMatchType {
+  CONTAINS
+  STARTS_WITH
+  REGEX
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  groupName String
+  name      String
+  person    Person?
+  isActive  Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions Transaction[]
+
+  // ✅ backrelation que faltava
+  rules Rule[]
+
+  @@index([groupName])
+  @@index([person])
+}
+
+model Rule {
+  id            String        @id @default(cuid())
+  isActive      Boolean       @default(true)
+
+  target        RuleTarget
+  matchType     RuleMatchType
+  pattern       String
+  priority      Int           @default(100)
+
+  renameTo      String?
+  categoryId    String?
+  category      Category?     @relation(fields: [categoryId], references: [id])
+
+  tags          String[]      @default([])
+  person        Person?
+  paymentType   PaymentType?
+  wallet        Wallet?
+
+  incomeType    IncomeType?
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([target, isActive])
+  @@index([priority])
+}
+
+model Income {
+  id          String     @id @default(cuid())
+  person      Person
+  type        IncomeType
+  wallet      Wallet     @default(SALARIO)
+  amountCents Int
+  monthKey    String
+  notes       String?
+
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([monthKey])
+  @@index([person])
+  @@index([type])
+  @@index([wallet])
+}
+
+model IncomeTemplate {
+  id          String     @id @default(cuid())
+  type        IncomeType
+  wallet      Wallet
+  person      Person
+  amountCents Int
+  isActive    Boolean    @default(true)
+
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([isActive])
+  @@index([type])
+  @@index([wallet])
+  @@index([person])
+}
+
+model Transaction {
+  id            String      @id @default(cuid())
+  source        String
+  externalId    String?
+  description   String
+  normalized    String?
+  amountCents   Int
+  occurredAt    DateTime
+  importedAt    DateTime    @default(now())
+
+  monthKey      String
+  person        Person      @default(AMBOS)
+  wallet        Wallet      @default(SALARIO)
+  paymentType   PaymentType @default(DEBITO_PIX)
+
+  categoryId    String?
+  category      Category?   @relation(fields: [categoryId], references: [id])
+
+  tags          String[]    @default([])
+
+  categoryRaw   String?
+  notes         String?
+
+  installmentCurrent Int?
+  installmentTotal   Int?
+
+  rowHash       String      @unique
+
+  @@index([occurredAt])
+  @@index([source])
+  @@index([monthKey])
+  @@index([person])
+  @@index([wallet])
+  @@index([paymentType])
+  @@index([categoryId])
+}
