@@ -64,3 +64,75 @@ describe("jaccardSimilarity", () => {
     expect(jaccardSimilarity(["uber"], [])).toBe(0);
   });
 });
+
+import { findBestMatch } from "./suggestionEngine";
+
+describe("findBestMatch", () => {
+  const history = [
+    {
+      description: "UBER *TRIP 11111111 SP",
+      categoryId: "cat-transporte",
+      normalized: "Uber",
+      person: "PEDRO",
+      wallet: "SALARIO",
+      paymentType: "DEBITO_PIX",
+      tags: ["Transporte"],
+      occurredAt: new Date("2026-03-01"),
+    },
+    {
+      description: "IFOOD*PEDIDO 22222222",
+      categoryId: "cat-alimentacao",
+      normalized: "iFood",
+      person: "MIRELA",
+      wallet: "VALE_ALIMENTACAO",
+      paymentType: "DEBITO_PIX",
+      tags: ["Delivery"],
+      occurredAt: new Date("2026-03-05"),
+    },
+  ];
+
+  it("retorna a melhor sugestão acima do threshold", () => {
+    const result = findBestMatch("UBER *TRIP 99999999 RJ", history);
+    expect(result).not.toBeNull();
+    expect(result!.categoryId).toBe("cat-transporte");
+    expect(result!.confidence).toBe(1);
+    expect(result!.sourceDescription).toBe("UBER *TRIP 11111111 SP");
+    expect(result!.suggestedNormalized).toBe("Uber");
+  });
+
+  it("retorna null quando nenhuma descrição supera o threshold de 0.6", () => {
+    const result = findBestMatch("NETFLIX ASSINATURA", history);
+    expect(result).toBeNull();
+  });
+
+  it("retorna null para histórico vazio", () => {
+    expect(findBestMatch("UBER *TRIP 12345", [])).toBeNull();
+  });
+
+  it("em empate de score, retorna o match mais recente", () => {
+    const tiedHistory = [
+      {
+        description: "UBER *TRIP 11111111",
+        categoryId: "cat-old",
+        normalized: "Uber Antigo",
+        person: "PEDRO",
+        wallet: "SALARIO",
+        paymentType: "DEBITO_PIX",
+        tags: [],
+        occurredAt: new Date("2026-01-01"),
+      },
+      {
+        description: "UBER *TRIP 22222222",
+        categoryId: "cat-new",
+        normalized: "Uber Novo",
+        person: "PEDRO",
+        wallet: "SALARIO",
+        paymentType: "DEBITO_PIX",
+        tags: [],
+        occurredAt: new Date("2026-04-01"),
+      },
+    ];
+    const result = findBestMatch("UBER *TRIP 33333333", tiedHistory);
+    expect(result!.categoryId).toBe("cat-new");
+  });
+});
