@@ -3,6 +3,7 @@ import type { Person, Wallet, PaymentType, IncomeType } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { parseNubankCsv } from "@/lib/nubankCsv";
 import { applyRulesFromList, loadRules, cleanDisplayName } from "@/lib/rulesEngine";
+import { getSuggestions, type SuggestionResult } from "@/lib/suggestionEngine";
 
 export const runtime = "nodejs";
 
@@ -25,6 +26,7 @@ type PreviewItem =
       installmentCurrent: number | null;
       installmentTotal: number | null;
       notes: string | null;
+      suggestion?: SuggestionResult;
     }
   | {
       kind: "income";
@@ -145,6 +147,21 @@ export async function POST(req: Request) {
         installmentTotal: p.installmentTotal ?? null,
         notes: null
       });
+    }
+
+    const uncategorizedDescs = items
+      .filter((it): it is Extract<typeof it, { kind: "transaction" }> =>
+        it.kind === "transaction" && it.categoryId === null
+      )
+      .map((it) => it.description);
+
+    const suggestions = await getSuggestions(uncategorizedDescs, prisma);
+
+    for (const item of items) {
+      if (item.kind === "transaction" && item.categoryId === null) {
+        const s = suggestions.get(item.description);
+        if (s) (item as Extract<typeof item, { kind: "transaction" }>).suggestion = s;
+      }
     }
 
     return NextResponse.json({ ok: true, categories, items });
