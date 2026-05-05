@@ -1,298 +1,37 @@
 "use client";
 
-import { useMemo, useState } from "react";
-
-type Uploader = "PEDRO" | "MIRELA";
-type Person = "PEDRO" | "MIRELA" | "AMBOS";
-type Wallet = "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS";
-type PaymentType = "DEBITO_PIX" | "CREDITO_A_VISTA" | "PARCELADO" | "IGNORAR";
-type IncomeType = "SALARIO" | "VALE_ALIMENTACAO" | "OUTROS" | "RESTANTE_MES_ANTERIOR";
-
-type Category = {
-  id: string;
-  groupName: string;
-  name: string;
-};
-
-type PreviewTx = {
-  kind: "transaction";
-  rowHash: string;
-  source: string;
-  externalId: string | null;
-  occurredAt: string;
-  monthKey: string;
-  description: string;
-  normalized: string;
-  amountCents: number;
-  person: Person;
-  wallet: Wallet;
-  paymentType: PaymentType;
-  categoryId: string | null;
-  tags: string[];
-  installmentCurrent: number | null;
-  installmentTotal: number | null;
-  notes: string | null;
-  suggestion?: {
-    categoryId: string;
-    confidence: number;
-    sourceDescription: string;
-    suggestedNormalized?: string;
-    suggestedPerson?: Person;
-    suggestedWallet?: Wallet;
-    suggestedPaymentType?: PaymentType;
-    suggestedTags: string[];
-  };
-};
-
-type PreviewIncome = {
-  kind: "income";
-  previewId: string;
-  source: string;
-  externalId: string | null;
-  occurredAt: string;
-  monthKey: string;
-  description: string;
-  amountCents: number;
-  person: Person;
-  wallet: Wallet;
-  incomeType: IncomeType;
-  notes: string | null;
-};
-
-type PreviewItem = PreviewTx | PreviewIncome;
-
-function formatBRL(cents: number): string {
-  return (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-
-function sourceLabel(source: string): string {
-  return source === "nubank_credit" ? "Fatura Cartão de Crédito" : "Cartão de Débito/PIX";
-}
-
-function groupIcon(groupName: string): string {
-  const g = (groupName || "").toLowerCase();
-  if (g.includes("fixa")) return "🏠";
-  if (g.includes("alimenta")) return "🍽️";
-  if (g.includes("transpor")) return "🚗";
-  if (g.includes("saúde") || g.includes("saude")) return "🩺";
-  if (g.includes("educ")) return "🎓";
-  if (g.includes("lazer")) return "🎬";
-  if (g.includes("casa")) return "🛋️";
-  if (g.includes("pesso")) return "👤";
-  if (g.includes("invest")) return "💰";
-  return "🏷️";
-}
-
-function pill(cls: string) {
-  return `inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium border ${cls}`;
-}
-
-function pillPayment(p: PaymentType) {
-  if (p === "DEBITO_PIX") return pill("bg-blue-50 text-blue-700 border-blue-200");
-  if (p === "CREDITO_A_VISTA") return pill("bg-purple-50 text-purple-700 border-purple-200");
-  if (p === "PARCELADO") return pill("bg-amber-50 text-amber-800 border-amber-200");
-  return pill("bg-zinc-100 text-zinc-700 border-zinc-200");
-}
-
-function pillWallet(w: Wallet) {
-  if (w === "SALARIO") return pill("bg-emerald-50 text-emerald-800 border-emerald-200");
-  if (w === "VALE_ALIMENTACAO") return pill("bg-lime-50 text-lime-800 border-lime-200");
-  return pill("bg-zinc-100 text-zinc-700 border-zinc-200");
-}
-
-function parseTags(s: string): string[] {
-  return (s || "")
-    .split(",")
-    .map((x) => x.trim())
-    .filter(Boolean);
-}
-
-type RuleDraft = {
-  open: boolean;
-  target: "TRANSACTION" | "INCOME";
-  matchType: "CONTAINS" | "STARTS_WITH" | "REGEX";
-  pattern: string;
-  priority: number;
-  renameTo: string;
-  categoryId: string;
-  tags: string;
-  person: "" | Person;
-  paymentType: "" | PaymentType;
-  wallet: "" | Wallet;
-  incomeType: "" | IncomeType;
-  saving?: boolean;
-  error?: string;
-  ok?: string;
-};
-
-function defaultDraftForItem(it: PreviewItem): RuleDraft {
-  const basePattern = it.description.trim().slice(0, 80);
-  if (it.kind === "income") {
-    return {
-      open: true,
-      target: "INCOME",
-      matchType: "CONTAINS",
-      pattern: basePattern,
-      priority: 20,
-      renameTo: "",
-      categoryId: "",
-      tags: "",
-      person: it.person,
-      paymentType: "",
-      wallet: it.wallet,
-      incomeType: it.incomeType
-    };
-  }
-  return {
-    open: true,
-    target: "TRANSACTION",
-    matchType: "CONTAINS",
-    pattern: basePattern,
-    priority: 20,
-    renameTo: it.normalized || "",
-    categoryId: it.categoryId ?? "",
-    tags: (it.tags || []).join(", "),
-    person: it.person,
-    paymentType: it.paymentType,
-    wallet: it.wallet,
-    incomeType: ""
-  };
-}
-
-function keyOf(it: PreviewItem) {
-  return it.kind === "transaction" ? it.rowHash : it.previewId;
-}
-
-function tokenizeSimple(desc: string): string[] {
-  const NOISE = new Set(["pix", "pag", "dm", "ifd", "pg"]);
-  return desc
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .split(/[\s*\/\-\.]+/)
-    .map((t) => t.replace(/[^a-z0-9]/g, ""))
-    .filter((t) => t.length >= 3)
-    .filter((t) => !/^\d{6,}$/.test(t))
-    .filter((t) => !NOISE.has(t));
-}
-
-function draftFromSuggestion(
-  it: PreviewTx,
-  s: NonNullable<PreviewTx["suggestion"]>
-): RuleDraft {
-  const newTokens = tokenizeSimple(it.description);
-  const srcTokens = tokenizeSimple(s.sourceDescription);
-  const shared = newTokens.filter((t) => srcTokens.includes(t));
-  const pattern = shared.length > 0 ? shared[0] : it.description.slice(0, 40).trim();
-
-  return {
-    open: true,
-    target: "TRANSACTION",
-    matchType: "CONTAINS",
-    pattern,
-    priority: 20,
-    renameTo: s.suggestedNormalized ?? it.normalized,
-    categoryId: s.categoryId,
-    tags: (s.suggestedTags ?? []).join(", "),
-    person: s.suggestedPerson ?? it.person,
-    paymentType: s.suggestedPaymentType ?? it.paymentType,
-    wallet: s.suggestedWallet ?? it.wallet,
-    incomeType: "",
-  };
-}
-
-// Tags dropdown multi-select (opções sugeridas + criar novas)
-function TagsPicker({
-  value,
-  options,
-  onChange
-}: {
-  value: string[];
-  options: string[];
-  onChange: (next: string[]) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [newTag, setNewTag] = useState("");
-
-  const selectedSet = useMemo(() => new Set(value), [value]);
-
-  function toggle(tag: string) {
-    const next = new Set(selectedSet);
-    if (next.has(tag)) next.delete(tag);
-    else next.add(tag);
-    onChange(Array.from(next));
-  }
-
-  function addNew() {
-    const t = newTag.trim();
-    if (!t) return;
-    const next = new Set(selectedSet);
-    next.add(t);
-    onChange(Array.from(next));
-    setNewTag("");
-  }
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        className="border rounded-lg px-3 py-2 text-xs w-full text-left bg-white"
-        onClick={() => setOpen((v) => !v)}
-      >
-        {value.length ? `${value.length} tag(s)` : "Selecionar tags"}
-      </button>
-
-      {open && (
-        <div className="absolute z-20 mt-1 w-[420px] max-w-[60vw] bg-white border rounded-xl shadow-lg p-3">
-          <div className="text-xs font-semibold mb-2">Tags</div>
-
-          <div className="max-h-56 overflow-y-auto pr-1 space-y-1">
-            {options.map((tag) => (
-              <label key={tag} className="flex items-center gap-2 text-xs cursor-pointer">
-                <input type="checkbox" checked={selectedSet.has(tag)} onChange={() => toggle(tag)} />
-                <span className="break-words">{tag}</span>
-              </label>
-            ))}
-            {options.length === 0 && <div className="text-xs text-zinc-500">Sem sugestões ainda.</div>}
-          </div>
-
-          <div className="mt-3 border-t pt-3">
-            <div className="text-xs font-semibold mb-2">Adicionar nova</div>
-            <div className="flex gap-2">
-              <input
-                className="border rounded-lg p-2 text-xs w-full"
-                value={newTag}
-                onChange={(e) => setNewTag(e.target.value)}
-                placeholder="Ex.: Caixinha"
-              />
-              <button
-                type="button"
-                className="border rounded-lg px-3 py-2 text-xs bg-zinc-900 text-white"
-                onClick={addNew}
-              >
-                Add
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-3 flex justify-end">
-            <button type="button" className="text-xs underline" onClick={() => setOpen(false)}>
-              Fechar
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+import { useMemo, useRef, useState } from "react";
+import type {
+  Uploader,
+  Person,
+  Wallet,
+  PaymentType,
+  Category,
+  PreviewTx,
+  PreviewIncome,
+  PreviewItem,
+  RuleDraft,
+  UndoState,
+} from "./types";
+import {
+  keyOf,
+  parseTags,
+  defaultDraftForItem,
+  draftFromSuggestion,
+  findNextUncategorized,
+  isCategorized,
+} from "./importLogic";
+import { TransactionList } from "./TransactionList";
+import { DetailPanel } from "./DetailPanel";
 
 export default function ImportPage() {
+  // ── Upload state ──────────────────────────────────────────────────────────
   const [file, setFile] = useState<File | null>(null);
   const [uploader, setUploader] = useState<Uploader>("MIRELA");
-
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string>("");
 
+  // ── Modal state ───────────────────────────────────────────────────────────
   const [modalOpen, setModalOpen] = useState(false);
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<PreviewItem[]>([]);
@@ -300,64 +39,157 @@ export default function ImportPage() {
   const [ruleDrafts, setRuleDrafts] = useState<Record<string, RuleDraft>>({});
   const [acceptedSuggestions, setAcceptedSuggestions] = useState<Set<string>>(new Set());
 
-  // sugestões de tags derivadas das categorias
+  // ── Navigation state ──────────────────────────────────────────────────────
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [undoState, setUndoState] = useState<UndoState | null>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const preEditCategoryIdRef = useRef<string | null>(null);
+
+  // ── Derived values ────────────────────────────────────────────────────────
+  const totalSelected = useMemo(
+    () => Object.values(selected).filter(Boolean).length,
+    [selected]
+  );
+
+  const uncategorizedCount = useMemo(
+    () => items.filter((it) => !isCategorized(it)).length,
+    [items]
+  );
+
   const tagOptions = useMemo(() => {
     const set = new Set<string>();
     for (const c of categories) {
       set.add(`${c.groupName} - ${c.name}`);
       set.add(c.groupName);
     }
-    // acrescenta tags úteis padrão
     set.add("Fixa Dividida");
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [categories]);
 
-  const totalSelected = useMemo(() => Object.values(selected).filter(Boolean).length, [selected]);
+  const activeItem = useMemo(
+    () => (activeKey ? (items.find((it) => keyOf(it) === activeKey) ?? null) : null),
+    [activeKey, items]
+  );
 
+  // ── API: preview ──────────────────────────────────────────────────────────
   async function preview(e: React.FormEvent) {
     e.preventDefault();
     if (!file) return;
-
     setLoading(true);
     setStatus("");
-
     try {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("uploader", uploader);
-
-      const res = await fetch("/api/import/nubank/preview", { method: "POST", body: fd });
+      const res = await fetch("/api/import/nubank/preview", {
+        method: "POST",
+        body: fd,
+      });
       const json = await res.json();
-
       if (!json.ok) {
-        setStatus(json.error || "Erro ao gerar prévia.");
-        setLoading(false);
+        setStatus(json.error ?? "Erro ao gerar prévia.");
         return;
       }
-
-      setCategories(json.categories || []);
-      setItems(json.items || []);
+      const loadedItems: PreviewItem[] = json.items ?? [];
+      setCategories(json.categories ?? []);
+      setItems(loadedItems);
 
       const sel: Record<string, boolean> = {};
       const drafts: Record<string, RuleDraft> = {};
-      for (const it of (json.items || []) as PreviewItem[]) {
+      for (const it of loadedItems) {
         const k = keyOf(it);
         sel[k] = true;
-        drafts[k] = { ...defaultDraftForItem(it), open: false };
+        drafts[k] = defaultDraftForItem(it);
       }
       setSelected(sel);
       setRuleDrafts(drafts);
+      setAcceptedSuggestions(new Set());
+
+      const firstUncategorized = loadedItems.find(
+        (it) => it.kind === "transaction" && !it.categoryId
+      );
+      const firstKey = firstUncategorized
+        ? keyOf(firstUncategorized)
+        : loadedItems[0]
+        ? keyOf(loadedItems[0])
+        : null;
+      setActiveKey(firstKey);
+      if (firstUncategorized?.kind === "transaction") {
+        preEditCategoryIdRef.current = firstUncategorized.categoryId;
+      }
 
       setModalOpen(true);
       setStatus("");
     } catch (err: any) {
-      setStatus(err?.message || "Falha ao gerar prévia.");
+      setStatus(err?.message ?? "Falha ao gerar prévia.");
     } finally {
       setLoading(false);
     }
   }
 
-  function acceptSuggestion(rowHash: string, s: NonNullable<PreviewTx["suggestion"]>) {
+  // ── API: commit ───────────────────────────────────────────────────────────
+  async function commit() {
+    setLoading(true);
+    setStatus("");
+    try {
+      const payloadItems = items.filter((it) => selected[keyOf(it)]);
+      const res = await fetch("/api/import/nubank/commit", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: payloadItems }),
+      });
+      const json = await res.json();
+      if (!json.ok) {
+        setStatus(json.error ?? "Erro ao importar.");
+        return;
+      }
+      setStatus(
+        `Importação concluída ✅ Transações: +${json.insertedTx} (skip ${json.skippedTx}) | Entradas: +${json.insertedIncome} (skip ${json.skippedIncome})`
+      );
+      setModalOpen(false);
+      setItems([]);
+      setSelected({});
+      setRuleDrafts({});
+      setActiveKey(null);
+    } catch (err: any) {
+      setStatus(err?.message ?? "Falha ao importar.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ── Item mutators ─────────────────────────────────────────────────────────
+  function setTx(rowHash: string, patch: Partial<PreviewTx>) {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.kind === "transaction" && it.rowHash === rowHash
+          ? ({ ...it, ...patch } as PreviewTx)
+          : it
+      )
+    );
+  }
+
+  function setIncome(previewId: string, patch: Partial<PreviewIncome>) {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.kind === "income" && it.previewId === previewId
+          ? ({ ...it, ...patch } as PreviewIncome)
+          : it
+      )
+    );
+  }
+
+  function toggleAll(v: boolean) {
+    const sel: Record<string, boolean> = {};
+    for (const it of items) sel[keyOf(it)] = v;
+    setSelected(sel);
+  }
+
+  // ── Suggestion acceptance ─────────────────────────────────────────────────
+  function acceptSuggestion(
+    rowHash: string,
+    s: NonNullable<PreviewTx["suggestion"]>
+  ) {
     setItems((prev) =>
       prev.map((it) => {
         if (it.kind !== "transaction" || it.rowHash !== rowHash) return it;
@@ -375,96 +207,108 @@ export default function ImportPage() {
     setAcceptedSuggestions((prev) => new Set([...prev, rowHash]));
   }
 
-  async function commit() {
-    setLoading(true);
-    setStatus("");
+  // ── Navigation ────────────────────────────────────────────────────────────
+  function handleActivate(key: string) {
+    const it = items.find((i) => keyOf(i) === key);
+    preEditCategoryIdRef.current =
+      it?.kind === "transaction" ? it.categoryId : null;
+    setActiveKey(key);
+  }
 
-    try {
-      const payloadItems = items.filter((it) => selected[keyOf(it)]);
+  function handleAdvance() {
+    if (!activeKey) return;
+    const it = items.find((i) => keyOf(i) === activeKey);
+    if (!it) return;
 
-      const res = await fetch("/api/import/nubank/commit", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ items: payloadItems })
-      });
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    const cat =
+      it.kind === "transaction" && it.categoryId
+        ? categories.find((c) => c.id === it.categoryId)
+        : null;
+    setUndoState({
+      key: activeKey,
+      description: it.description,
+      prevCategoryId: preEditCategoryIdRef.current,
+      categoryName: cat?.name ?? "sem categoria",
+    });
+    undoTimerRef.current = setTimeout(() => setUndoState(null), 3000);
 
-      const json = await res.json();
-      if (!json.ok) {
-        setStatus(json.error || "Erro ao importar.");
-        setLoading(false);
-        return;
-      }
-
-      setStatus(
-        `Importação concluída ✅ Transações: +${json.insertedTx} (skip ${json.skippedTx}) | Entradas: +${json.insertedIncome} (skip ${json.skippedIncome})`
-      );
-      setModalOpen(false);
-      setItems([]);
-      setSelected({});
-      setRuleDrafts({});
-    } catch (err: any) {
-      setStatus(err?.message || "Falha ao importar.");
-    } finally {
-      setLoading(false);
+    const nextKey = findNextUncategorized(items, activeKey, selected);
+    if (nextKey) {
+      const nextItem = items.find((i) => keyOf(i) === nextKey);
+      preEditCategoryIdRef.current =
+        nextItem?.kind === "transaction" ? nextItem.categoryId : null;
+      setActiveKey(nextKey);
     }
   }
 
-  function setTx(rowHash: string, patch: Partial<PreviewTx>) {
+  function handleSkip() {
+    if (!activeKey) return;
+    const nextKey = findNextUncategorized(items, activeKey, selected);
+    if (nextKey) {
+      const nextItem = items.find((i) => keyOf(i) === nextKey);
+      preEditCategoryIdRef.current =
+        nextItem?.kind === "transaction" ? nextItem.categoryId : null;
+      setActiveKey(nextKey);
+    }
+  }
+
+  function handleUndo() {
+    if (!undoState) return;
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
     setItems((prev) =>
-      prev.map((it) => (it.kind === "transaction" && it.rowHash === rowHash ? ({ ...it, ...patch } as PreviewTx) : it))
+      prev.map((it) => {
+        if (keyOf(it) !== undoState.key || it.kind !== "transaction") return it;
+        return { ...it, categoryId: undoState.prevCategoryId };
+      })
     );
+    preEditCategoryIdRef.current = undoState.prevCategoryId;
+    setActiveKey(undoState.key);
+    setUndoState(null);
   }
 
-  function setIncome(previewId: string, patch: Partial<PreviewIncome>) {
-    setItems((prev) =>
-      prev.map((it) => (it.kind === "income" && it.previewId === previewId ? ({ ...it, ...patch } as PreviewIncome) : it))
-    );
-  }
-
-  function toggleAll(v: boolean) {
-    const sel: Record<string, boolean> = {};
-    for (const it of items) sel[keyOf(it)] = v;
-    setSelected(sel);
-  }
-
+  // ── Rule draft helpers ────────────────────────────────────────────────────
   function openRule(k: string) {
-    setRuleDrafts((d) => ({ ...d, [k]: { ...(d[k] || ({ open: true } as any)), open: true, error: "", ok: "" } }));
+    const it = items.find((i) => keyOf(i) === k);
+    if (!it) return;
+    setRuleDrafts((d) => ({
+      ...d,
+      [k]: { ...(d[k] ?? defaultDraftForItem(it)), open: true, error: "", ok: "" },
+    }));
   }
+
   function closeRule(k: string) {
-    setRuleDrafts((d) => ({ ...d, [k]: { ...(d[k] || ({ open: false } as any)), open: false } }));
+    setRuleDrafts((d) => ({ ...d, [k]: { ...d[k], open: false } }));
   }
+
   function setDraft(k: string, patch: Partial<RuleDraft>) {
-    setRuleDrafts((d) => ({ ...d, [k]: { ...(d[k] || ({} as any)), ...patch } }));
+    setRuleDrafts((d) => ({ ...d, [k]: { ...d[k], ...patch } }));
   }
 
   function applyDraftToThisLine(k: string) {
     const d = ruleDrafts[k];
     if (!d) return;
-
     setItems((prev) =>
       prev.map((it) => {
         if (keyOf(it) !== k) return it;
-
         if (it.kind === "transaction" && d.target === "TRANSACTION") {
           const patch: Partial<PreviewTx> = {};
           if (d.renameTo.trim()) patch.normalized = d.renameTo.trim();
           if (d.categoryId) patch.categoryId = d.categoryId;
           const tags = parseTags(d.tags);
           if (tags.length) patch.tags = tags;
-          if (d.person) patch.person = d.person as any;
-          if (d.wallet) patch.wallet = d.wallet as any;
-          if (d.paymentType) patch.paymentType = d.paymentType as any;
+          if (d.person) patch.person = d.person as Person;
+          if (d.wallet) patch.wallet = d.wallet as Wallet;
+          if (d.paymentType) patch.paymentType = d.paymentType as PaymentType;
           return { ...it, ...patch } as PreviewTx;
         }
-
         if (it.kind === "income" && d.target === "INCOME") {
           const patch: Partial<PreviewIncome> = {};
-          if (d.person) patch.person = d.person as any;
-          if (d.wallet) patch.wallet = d.wallet as any;
+          if (d.person) patch.person = d.person as Person;
+          if (d.wallet) patch.wallet = d.wallet as Wallet;
           if (d.incomeType) patch.incomeType = d.incomeType as any;
           return { ...it, ...patch } as PreviewIncome;
         }
-
         return it;
       })
     );
@@ -473,51 +317,44 @@ export default function ImportPage() {
   async function saveRule(k: string, applyNow: boolean) {
     const d = ruleDrafts[k];
     if (!d) return;
-
     setDraft(k, { saving: true, error: "", ok: "" });
-
     try {
       const payload: any = {
         target: d.target,
         matchType: d.matchType,
         pattern: d.pattern.trim(),
-        priority: Number(d.priority)
+        priority: Number(d.priority),
       };
-
       if (!payload.pattern) {
         setDraft(k, { saving: false, error: "Padrão (pattern) é obrigatório." });
         return;
       }
-
       if (d.renameTo.trim()) payload.renameTo = d.renameTo.trim();
       if (d.categoryId) payload.categoryId = d.categoryId;
-
       payload.tags = parseTags(d.tags);
-
       if (d.person) payload.person = d.person;
       if (d.wallet) payload.wallet = d.wallet;
       if (d.paymentType) payload.paymentType = d.paymentType;
-
       if (d.target === "INCOME") {
         if (!d.incomeType) {
-          setDraft(k, { saving: false, error: "Selecione incomeType para regras de INCOME." });
+          setDraft(k, {
+            saving: false,
+            error: "Selecione incomeType para regras de INCOME.",
+          });
           return;
         }
         payload.incomeType = d.incomeType;
       }
-
       const res = await fetch("/api/rules", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       });
-
       const json = await res.json();
       if (!json.ok) {
-        setDraft(k, { saving: false, error: json.error || "Erro ao criar regra." });
+        setDraft(k, { saving: false, error: json.error ?? "Erro ao criar regra." });
         return;
       }
-
       if (applyNow) {
         applyDraftToThisLine(k);
         setDraft(k, { saving: false, ok: "Regra criada ✅ e aplicada nesta linha (prévia)." });
@@ -525,23 +362,28 @@ export default function ImportPage() {
         setDraft(k, { saving: false, ok: "Regra criada ✅ (vale para próximos imports)." });
       }
     } catch (err: any) {
-      setDraft(k, { saving: false, error: err?.message || "Erro ao criar regra." });
+      setDraft(k, { saving: false, error: err?.message ?? "Erro ao criar regra." });
     }
   }
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <main className="space-y-6">
+      {/* Upload form */}
       <section className="bg-white rounded-xl border p-5">
         <h2 className="text-lg font-semibold">Importar CSV (Nubank)</h2>
         <p className="text-sm text-zinc-600 mt-1">
           Ao enviar, abrimos uma prévia com regras e você ajusta antes de gravar no banco.
         </p>
-
         <form className="mt-4 space-y-4" onSubmit={preview}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <label className="text-sm font-medium">Quem está fazendo o upload?</label>
-              <select className="mt-1 w-full border rounded-lg p-2" value={uploader} onChange={(e) => setUploader(e.target.value as Uploader)}>
+              <select
+                className="mt-1 w-full border rounded-lg p-2"
+                value={uploader}
+                onChange={(e) => setUploader(e.target.value as Uploader)}
+              >
                 <option value="PEDRO">Pedro</option>
                 <option value="MIRELA">Mirela</option>
               </select>
@@ -549,7 +391,6 @@ export default function ImportPage() {
                 Esse nome vira o padrão do campo <b>Pessoa</b> (se a regra não definir outra).
               </div>
             </div>
-
             <div>
               <label className="text-sm font-medium">Arquivo CSV</label>
               <input
@@ -560,496 +401,136 @@ export default function ImportPage() {
               />
             </div>
           </div>
-
-          <button disabled={!file || loading} className="border rounded-lg px-4 py-2 bg-zinc-900 text-white disabled:opacity-50">
+          <button
+            disabled={!file || loading}
+            className="border rounded-lg px-4 py-2 bg-zinc-900 text-white disabled:opacity-50"
+          >
             {loading ? "Processando..." : "Gerar prévia"}
           </button>
-
-          {status && <div className="text-sm border rounded-lg p-3 bg-zinc-50">{status}</div>}
+          {status && (
+            <div className="text-sm border rounded-lg p-3 bg-zinc-50">{status}</div>
+          )}
         </form>
-
         <div className="mt-4 text-sm">
-          <a className="underline" href="/manual">Adicionar manualmente (sem CSV)</a>
+          <a className="underline" href="/manual">
+            Adicionar manualmente (sem CSV)
+          </a>
         </div>
       </section>
 
+      {/* Split-view modal */}
       {modalOpen && (
         <div className="fixed inset-0 z-50">
-          <div className="absolute inset-0 bg-black/40" onClick={() => !loading && setModalOpen(false)} />
-
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => !loading && setModalOpen(false)}
+          />
           <div className="absolute inset-0 p-3 md:p-6 flex items-center justify-center">
-            <div className="w-[90vw] max-w-[1700px] bg-white rounded-2xl border shadow-xl overflow-hidden">
-              <div className="p-4 md:p-5 border-b flex flex-wrap items-center justify-between gap-3">
+            <div className="w-[95vw] max-w-[1200px] h-[90vh] bg-white rounded-2xl border shadow-xl overflow-hidden flex flex-col">
+
+              {/* Modal header */}
+              <div className="p-4 border-b flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
                 <div>
                   <div className="text-lg font-semibold">Prévia da importação</div>
-                  <div className="text-sm text-zinc-600">Selecione, edite, crie regras e confirme.</div>
+                  <div className="text-sm text-zinc-500">
+                    Sem categoria:{" "}
+                    <span className="font-semibold">{uncategorizedCount}</span> de{" "}
+                    <span className="font-semibold">{items.length}</span>
+                  </div>
                 </div>
-
                 <div className="flex flex-wrap items-center gap-2">
-                  <button className="text-sm underline" onClick={() => toggleAll(true)} disabled={loading}>Selecionar tudo</button>
-                  <button className="text-sm underline" onClick={() => toggleAll(false)} disabled={loading}>Limpar seleção</button>
-
                   <div className="text-sm text-zinc-700 border rounded-lg px-3 py-2 bg-zinc-50">
                     Selecionados: <span className="font-semibold">{totalSelected}</span>
                   </div>
-
                   <button
                     className="border rounded-lg px-4 py-2 bg-zinc-900 text-white disabled:opacity-50"
                     onClick={commit}
                     disabled={loading || totalSelected === 0}
                   >
-                    {loading ? "Importando..." : "Confirmar importação"}
+                    {loading ? "Importando..." : "Confirmar importação ✓"}
                   </button>
-
-                  <button className="border rounded-lg px-4 py-2 bg-white" onClick={() => setModalOpen(false)} disabled={loading}>
+                  <button
+                    className="border rounded-lg px-4 py-2 bg-white"
+                    onClick={() => setModalOpen(false)}
+                    disabled={loading}
+                  >
                     Fechar
                   </button>
                 </div>
               </div>
 
-              <div className="p-4 md:p-5 overflow-y-auto" style={{ maxHeight: "calc(100vh - 140px)" }}>
-                <div className="border rounded-xl overflow-hidden">
-                  <table className="w-full text-sm table-fixed">
-                    <thead className="bg-zinc-100">
-                      <tr className="text-left">
-                        <th className="p-3 w-[46px]">✓</th>
-                        <th className="p-3 w-[80px] text-[11px]">Data</th>
-                        <th className="p-3 w-[280px]">Detalhes</th>
-                        <th className="p-3 w-[120px] text-right">Valor</th>
-                        <th className="p-3 w-[120px]">Pessoa</th>
-                        <th className="p-3 w-[160px]">Tipo</th>
-                        <th className="p-3 w-[140px]">Carteira</th>
-                        <th className="p-3 w-[200px]">Categoria</th>
-                        <th className="p-3 w-[260px]">Tags</th>
-                        <th className="p-3 w-[170px]">Notas</th>
-                      </tr>
-                    </thead>
-
-                    <tbody className="divide-y">
-                      {items.map((it) => {
-                        const k = keyOf(it);
-                        const checked = !!selected[k];
-                        const dateStr = new Intl.DateTimeFormat("pt-BR").format(new Date(it.occurredAt));
-
-                        return (
-                          <>
-                            <tr key={k} className={`${checked ? "" : "opacity-60"} ${it.kind === "transaction" && it.suggestion && !it.categoryId ? "bg-amber-50" : ""}`}>
-                              <td className="p-3 align-top">
-                                <input type="checkbox" checked={checked} onChange={(e) => setSelected((s) => ({ ...s, [k]: e.target.checked }))} />
-                              </td>
-
-                              <td className="p-3 align-top whitespace-nowrap text-[11px] text-zinc-700">
-                                {dateStr}
-                                {it.kind === "transaction" && it.installmentCurrent && it.installmentTotal ? (
-                                  <div className="text-[10px] text-zinc-500">
-                                    {it.installmentCurrent}/{it.installmentTotal}
-                                  </div>
-                                ) : null}
-                              </td>
-
-                              <td className="p-3 align-top">
-                                <div className="font-medium break-words">{it.description}</div>
-                                <div className="text-xs text-zinc-500 mt-1">{sourceLabel(it.source)}</div>
-
-                                {it.kind === "transaction" ? (
-                                  <div className="mt-2">
-                                    <div className="text-[11px] text-zinc-600 mb-1">Nome (exibição)</div>
-                                    <input
-                                      className="border rounded-lg p-2 text-xs w-[220px]"
-                                      value={it.normalized}
-                                      onChange={(e) => setTx(it.rowHash, { normalized: e.target.value })}
-                                      placeholder="Ex.: Spotify"
-                                    />
-                                  </div>
-                                ) : null}
-
-                                <div className="mt-2">
-                                  <button className="text-[11px] underline" onClick={() => openRule(k)}>
-                                    ➕ Criar regra a partir desta linha
-                                  </button>
-                                </div>
-                              </td>
-
-                              <td className="p-3 align-top text-right font-semibold whitespace-nowrap">
-                                {formatBRL(it.amountCents)}
-                              </td>
-
-                              <td className="p-3 align-top">
-                                <select
-                                  className="border rounded-lg p-2 text-xs w-full"
-                                  value={it.person}
-                                  onChange={(e) =>
-                                    it.kind === "transaction"
-                                      ? setTx(it.rowHash, { person: e.target.value as any })
-                                      : setIncome(it.previewId, { person: e.target.value as any })
-                                  }
-                                >
-                                  <option value="PEDRO">Pedro</option>
-                                  <option value="MIRELA">Mirela</option>
-                                  <option value="AMBOS">Ambos</option>
-                                </select>
-                              </td>
-
-                              <td className="p-3 align-top">
-                                {it.kind === "transaction" ? (
-                                  <>
-                                    <div className={pillPayment(it.paymentType)}>
-                                      {it.paymentType === "DEBITO_PIX" ? "🔵 Débito/PIX" : null}
-                                      {it.paymentType === "CREDITO_A_VISTA" ? "🟣 Crédito à vista" : null}
-                                      {it.paymentType === "PARCELADO" ? "🟠 Parcelado" : null}
-                                      {it.paymentType === "IGNORAR" ? "⚪ Ignorar" : null}
-                                    </div>
-                                    <select
-                                      className="border rounded-lg p-2 text-xs w-full mt-2"
-                                      value={it.paymentType}
-                                      onChange={(e) => setTx(it.rowHash, { paymentType: e.target.value as any })}
-                                    >
-                                      <option value="DEBITO_PIX">Débito/PIX</option>
-                                      <option value="CREDITO_A_VISTA">Crédito à vista</option>
-                                      <option value="PARCELADO">Parcelado</option>
-                                      <option value="IGNORAR">Ignorar</option>
-                                    </select>
-                                  </>
-                                ) : (
-                                  <>
-                                    <div className={pill("bg-emerald-50 text-emerald-800 border-emerald-200")}>💵 Entrada</div>
-                                    <select
-                                      className="border rounded-lg p-2 text-xs w-full mt-2"
-                                      value={it.incomeType}
-                                      onChange={(e) => setIncome(it.previewId, { incomeType: e.target.value as any })}
-                                    >
-                                      <option value="SALARIO">Salário</option>
-                                      <option value="VALE_ALIMENTACAO">Vale Alimentação</option>
-                                      <option value="OUTROS">Outros</option>
-                                      <option value="RESTANTE_MES_ANTERIOR">Restante Mês Anterior</option>
-                                    </select>
-                                  </>
-                                )}
-                              </td>
-
-                              <td className="p-3 align-top">
-                                <div className={pillWallet(it.wallet)}>
-                                  {it.wallet === "SALARIO" ? "🟢 Salário" : null}
-                                  {it.wallet === "VALE_ALIMENTACAO" ? "🟡 Vale" : null}
-                                  {it.wallet === "OUTROS" ? "⚫ Outros" : null}
-                                </div>
-                                <select
-                                  className="border rounded-lg p-2 text-xs w-full mt-2"
-                                  value={it.wallet}
-                                  onChange={(e) =>
-                                    it.kind === "transaction"
-                                      ? setTx(it.rowHash, { wallet: e.target.value as any })
-                                      : setIncome(it.previewId, { wallet: e.target.value as any })
-                                  }
-                                >
-                                  <option value="SALARIO">Salário</option>
-                                  <option value="VALE_ALIMENTACAO">Vale Alimentação</option>
-                                  <option value="OUTROS">Outros</option>
-                                </select>
-                              </td>
-
-                              <td className="p-3 align-top">
-                                {it.kind === "transaction" ? (
-                                  <>
-                                    <select
-                                      className="border rounded-lg p-2 text-xs w-full"
-                                      value={it.categoryId ?? ""}
-                                      onChange={(e) => setTx(it.rowHash, { categoryId: e.target.value || null })}
-                                    >
-                                      <option value="">(sem categoria)</option>
-                                      {categories.map((c) => (
-                                        <option key={c.id} value={c.id}>
-                                          {groupIcon(c.groupName)} {c.groupName} — {c.name}
-                                        </option>
-                                      ))}
-                                    </select>
-
-                                    {/* ✅ BOTÃO DIVIDIR 50/50 */}
-                                    <button
-                                      type="button"
-                                      className="mt-2 text-[11px] underline"
-                                      onClick={() => {
-                                        const nextTags = new Set([...(it.tags || []), "Fixa Dividida"]);
-                                        setTx(it.rowHash, { person: "AMBOS", tags: Array.from(nextTags) });
-                                      }}
-                                      title="Marca como conta fixa dividida (50/50) entre Pedro e Mirela"
-                                    >
-                                      ⇄ Dividir 50/50
-                                    </button>
-
-                                    <div className="text-[10px] text-zinc-500 mt-1">
-                                      Define Pessoa = <b>Ambos</b> e adiciona tag <b>Fixa Dividida</b>.
-                                    </div>
-
-                                    {it.suggestion && !it.categoryId && (
-                                      <div className="mt-2 flex items-center gap-2">
-                                        <span className="text-[11px] text-amber-700 font-medium">
-                                          💡 {categories.find((c) => c.id === it.suggestion!.categoryId)?.name ?? "Sugestão"}{" "}
-                                          · {Math.round(it.suggestion.confidence * 100)}%
-                                        </span>
-                                        <button
-                                          type="button"
-                                          onClick={() => acceptSuggestion(it.rowHash, it.suggestion!)}
-                                          className="text-[11px] text-amber-800 underline hover:text-amber-900"
-                                        >
-                                          Aceitar
-                                        </button>
-                                      </div>
-                                    )}
-
-                                    {acceptedSuggestions.has(it.rowHash) && it.suggestion && (
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          setRuleDrafts((prev) => ({
-                                            ...prev,
-                                            [k]: draftFromSuggestion(it, it.suggestion!),
-                                          }))
-                                        }
-                                        className="mt-1 text-[11px] text-blue-600 underline hover:text-blue-800"
-                                      >
-                                        Criar regra para futuras importações →
-                                      </button>
-                                    )}
-                                  </>
-                                ) : (
-                                  <div className="text-xs text-zinc-500">—</div>
-                                )}
-                              </td>
-
-                              <td className="p-3 align-top">
-                                {it.kind === "transaction" ? (
-                                  <div className="text-xs">
-                                    <TagsPicker
-                                      value={it.tags || []}
-                                      options={tagOptions}
-                                      onChange={(next) => setTx(it.rowHash, { tags: next })}
-                                    />
-                                    <div className="text-[10px] text-zinc-500 mt-1 break-words">
-                                      {(it.tags || []).slice(0, 3).join(", ")}{(it.tags || []).length > 3 ? "…" : ""}
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="text-xs text-zinc-500">—</div>
-                                )}
-                              </td>
-
-                              <td className="p-3 align-top">
-                                <textarea
-                                  className="border rounded-lg p-2 text-xs w-full min-h-[44px]"
-                                  value={it.notes ?? ""}
-                                  onChange={(e) =>
-                                    it.kind === "transaction"
-                                      ? setTx(it.rowHash, { notes: e.target.value })
-                                      : setIncome(it.previewId, { notes: e.target.value })
-                                  }
-                                  placeholder="Obs."
-                                />
-                              </td>
-                            </tr>
-
-                            {ruleDrafts[k]?.open ? (
-                              <tr key={`${k}-rule`}>
-                                <td colSpan={10} className="p-4 bg-zinc-50">
-                                  <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <div className="font-semibold text-sm">Criar regra (para próximos imports)</div>
-                                    <button className="text-sm underline" onClick={() => closeRule(k)} disabled={ruleDrafts[k]?.saving}>
-                                      Fechar
-                                    </button>
-                                  </div>
-
-                                  <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
-                                    <div>
-                                      <label className="text-xs font-medium">Alvo</label>
-                                      <select className="mt-1 w-full border rounded-lg p-2 text-xs"
-                                        value={ruleDrafts[k].target}
-                                        onChange={(e) => setDraft(k, { target: e.target.value as any })}
-                                      >
-                                        <option value="TRANSACTION">Transação</option>
-                                        <option value="INCOME">Entrada</option>
-                                      </select>
-                                    </div>
-
-                                    <div>
-                                      <label className="text-xs font-medium">Match</label>
-                                      <select className="mt-1 w-full border rounded-lg p-2 text-xs"
-                                        value={ruleDrafts[k].matchType}
-                                        onChange={(e) => setDraft(k, { matchType: e.target.value as any })}
-                                      >
-                                        <option value="CONTAINS">Contém</option>
-                                        <option value="STARTS_WITH">Começa com</option>
-                                        <option value="REGEX">Regex</option>
-                                      </select>
-                                    </div>
-
-                                    <div>
-                                      <label className="text-xs font-medium">Prioridade</label>
-                                      <input className="mt-1 w-full border rounded-lg p-2 text-xs"
-                                        type="number"
-                                        value={ruleDrafts[k].priority}
-                                        onChange={(e) => setDraft(k, { priority: Number(e.target.value) })}
-                                      />
-                                    </div>
-
-                                    <div className="md:col-span-3">
-                                      <label className="text-xs font-medium">Padrão (pattern)</label>
-                                      <input className="mt-1 w-full border rounded-lg p-2 text-xs"
-                                        value={ruleDrafts[k].pattern}
-                                        onChange={(e) => setDraft(k, { pattern: e.target.value })}
-                                      />
-                                      <div className="text-[11px] text-zinc-500 mt-1">Use um trecho estável (não precisa colar tudo).</div>
-                                    </div>
-
-                                    {ruleDrafts[k].target === "TRANSACTION" ? (
-                                      <>
-                                        <div>
-                                          <label className="text-xs font-medium">Renomear para</label>
-                                          <input className="mt-1 w-full border rounded-lg p-2 text-xs"
-                                            value={ruleDrafts[k].renameTo}
-                                            onChange={(e) => setDraft(k, { renameTo: e.target.value })}
-                                          />
-                                        </div>
-
-                                        <div>
-                                          <label className="text-xs font-medium">Categoria</label>
-                                          <select className="mt-1 w-full border rounded-lg p-2 text-xs"
-                                            value={ruleDrafts[k].categoryId}
-                                            onChange={(e) => setDraft(k, { categoryId: e.target.value })}
-                                          >
-                                            <option value="">(nenhuma)</option>
-                                            {categories.map((c) => (
-                                              <option key={c.id} value={c.id}>
-                                                {groupIcon(c.groupName)} {c.groupName} — {c.name}
-                                              </option>
-                                            ))}
-                                          </select>
-                                        </div>
-
-                                        <div>
-                                          <label className="text-xs font-medium">Tags</label>
-                                          <input className="mt-1 w-full border rounded-lg p-2 text-xs"
-                                            value={ruleDrafts[k].tags}
-                                            onChange={(e) => setDraft(k, { tags: e.target.value })}
-                                            placeholder="Separadas por vírgula"
-                                          />
-                                        </div>
-
-                                        <div>
-                                          <label className="text-xs font-medium">Pessoa</label>
-                                          <select className="mt-1 w-full border rounded-lg p-2 text-xs"
-                                            value={ruleDrafts[k].person}
-                                            onChange={(e) => setDraft(k, { person: e.target.value as any })}
-                                          >
-                                            <option value="">(não setar)</option>
-                                            <option value="PEDRO">Pedro</option>
-                                            <option value="MIRELA">Mirela</option>
-                                            <option value="AMBOS">Ambos</option>
-                                          </select>
-                                        </div>
-
-                                        <div>
-                                          <label className="text-xs font-medium">Tipo</label>
-                                          <select className="mt-1 w-full border rounded-lg p-2 text-xs"
-                                            value={ruleDrafts[k].paymentType}
-                                            onChange={(e) => setDraft(k, { paymentType: e.target.value as any })}
-                                          >
-                                            <option value="">(não setar)</option>
-                                            <option value="DEBITO_PIX">Débito/PIX</option>
-                                            <option value="CREDITO_A_VISTA">Crédito à vista</option>
-                                            <option value="PARCELADO">Parcelado</option>
-                                            <option value="IGNORAR">Ignorar</option>
-                                          </select>
-                                        </div>
-
-                                        <div>
-                                          <label className="text-xs font-medium">Carteira</label>
-                                          <select className="mt-1 w-full border rounded-lg p-2 text-xs"
-                                            value={ruleDrafts[k].wallet}
-                                            onChange={(e) => setDraft(k, { wallet: e.target.value as any })}
-                                          >
-                                            <option value="">(não setar)</option>
-                                            <option value="SALARIO">Salário</option>
-                                            <option value="VALE_ALIMENTACAO">Vale</option>
-                                            <option value="OUTROS">Outros</option>
-                                          </select>
-                                        </div>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <div>
-                                          <label className="text-xs font-medium">Income Type</label>
-                                          <select className="mt-1 w-full border rounded-lg p-2 text-xs"
-                                            value={ruleDrafts[k].incomeType}
-                                            onChange={(e) => setDraft(k, { incomeType: e.target.value as any })}
-                                          >
-                                            <option value="">(obrigatório)</option>
-                                            <option value="SALARIO">Salário</option>
-                                            <option value="VALE_ALIMENTACAO">Vale Alimentação</option>
-                                            <option value="OUTROS">Outros</option>
-                                            <option value="RESTANTE_MES_ANTERIOR">Restante Mês Anterior</option>
-                                          </select>
-                                        </div>
-                                      </>
-                                    )}
-                                  </div>
-
-                                  {(ruleDrafts[k].error || ruleDrafts[k].ok) && (
-                                    <div className={`mt-3 text-sm border rounded-lg p-3 ${
-                                      ruleDrafts[k].error ? "bg-red-50 border-red-200 text-red-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"
-                                    }`}>
-                                      {ruleDrafts[k].error || ruleDrafts[k].ok}
-                                    </div>
-                                  )}
-
-                                  <div className="mt-3 flex flex-wrap gap-2">
-                                    <button
-                                      className="border rounded-lg px-4 py-2 bg-zinc-900 text-white disabled:opacity-50"
-                                      onClick={() => saveRule(k, false)}
-                                      disabled={!!ruleDrafts[k].saving}
-                                    >
-                                      {ruleDrafts[k].saving ? "Salvando..." : "Salvar regra"}
-                                    </button>
-
-                                    <button
-                                      className="border rounded-lg px-4 py-2 bg-white disabled:opacity-50"
-                                      onClick={() => saveRule(k, true)}
-                                      disabled={!!ruleDrafts[k].saving}
-                                    >
-                                      {ruleDrafts[k].saving ? "Salvando..." : "Salvar e aplicar nesta linha"}
-                                    </button>
-
-                                    <button
-                                      className="border rounded-lg px-4 py-2 bg-white"
-                                      onClick={() => closeRule(k)}
-                                      disabled={!!ruleDrafts[k].saving}
-                                    >
-                                      Cancelar
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ) : null}
-                          </>
-                        );
-                      })}
-
-                      {items.length === 0 && (
-                        <tr>
-                          <td colSpan={10} className="p-4 text-zinc-600">
-                            Nenhum item na prévia.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
+              {/* Split body */}
+              <div className="flex flex-1 overflow-hidden">
+                {/* Left: transaction list */}
+                <div className="w-[320px] flex-shrink-0 border-r overflow-hidden">
+                  <TransactionList
+                    items={items}
+                    categories={categories}
+                    selected={selected}
+                    activeKey={activeKey}
+                    onToggleSelect={(key, checked) =>
+                      setSelected((s) => ({ ...s, [key]: checked }))
+                    }
+                    onToggleAll={toggleAll}
+                    onActivate={handleActivate}
+                  />
                 </div>
 
-                <div className="mt-4 text-xs text-zinc-500">
-                  Dica: use “Dividir 50/50” para aluguel/condomínio/luz/internet/pets etc.
+                {/* Right: detail panel */}
+                <div className="flex-1 overflow-hidden">
+                  <DetailPanel
+                    item={activeItem}
+                    categories={categories}
+                    tagOptions={tagOptions}
+                    ruleDraft={activeKey ? (ruleDrafts[activeKey] ?? null) : null}
+                    acceptedSuggestion={
+                      activeItem?.kind === "transaction"
+                        ? acceptedSuggestions.has(activeItem.rowHash)
+                        : false
+                    }
+                    onUpdateTx={setTx}
+                    onUpdateIncome={setIncome}
+                    onAcceptSuggestion={(rowHash, suggestion) => {
+                      acceptSuggestion(rowHash, suggestion);
+                      const it = items.find(
+                        (i) =>
+                          i.kind === "transaction" &&
+                          (i as PreviewTx).rowHash === rowHash
+                      ) as PreviewTx | undefined;
+                      if (it) {
+                        setRuleDrafts((prev) => ({
+                          ...prev,
+                          [rowHash]: draftFromSuggestion(it, suggestion),
+                        }));
+                      }
+                    }}
+                    onAdvance={handleAdvance}
+                    onSkip={handleSkip}
+                    onOpenRule={() => activeKey && openRule(activeKey)}
+                    onCloseRule={() => activeKey && closeRule(activeKey)}
+                    onSetDraft={(patch) => activeKey && setDraft(activeKey, patch)}
+                    onSaveRule={(applyNow) => activeKey && saveRule(activeKey, applyNow)}
+                  />
                 </div>
               </div>
             </div>
           </div>
+
+          {/* Undo toast */}
+          {undoState && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-zinc-900 text-white rounded-xl px-4 py-3 flex items-center gap-3 shadow-xl text-sm">
+              <span>
+                <span className="font-semibold">{undoState.description}</span> →{" "}
+                {undoState.categoryName}
+              </span>
+              <button
+                onClick={handleUndo}
+                className="border border-white/30 rounded-lg px-3 py-1 text-xs hover:bg-white/10"
+              >
+                Desfazer
+              </button>
+            </div>
+          )}
         </div>
       )}
     </main>
